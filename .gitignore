@@ -1,0 +1,10 @@
+data
+corpus
+tmp
+# common files to ignore
+*.pyc
+*.pyo
+*.swp
+# symlinked directories
+/transformers
+!/transformers/
