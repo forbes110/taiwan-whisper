@@ -149,23 +149,27 @@ def segment_audio(output_dir, trans_dir):
     # segment audio based on transcriptions
     
     chunk_size = 100
-    for category in categories[4:5]:
+    target_category_index = args.category_index
+    if target_category_index != -1:
+        categories = [categories[target_category_index]]
+    for category in categories:
         audio_trans_pairs_in_category = audio_fpaths_by_category[category]
         print(f"Processing category {category} with {len(audio_trans_pairs_in_category)} valid audio-transcript pairs")
         audio_trans_pairs_in_category = audio_trans_pairs_in_category
-        for audio_trans_pair in tqdm(audio_trans_pairs_in_category, total=len(audio_trans_pairs_in_category), desc=f"Segmenting category {category}..."):
-            result = segment_audio_by_trans(audio_trans_pair)
-            if result != "Success":
-                print(f"Error: failed to segment audio (audio_fpath, trans_fpath)={audio_trans_pair}, error={result}")
+        # for audio_trans_pair in tqdm(audio_trans_pairs_in_category, total=len(audio_trans_pairs_in_category), desc=f"Segmenting category {category}..."):
+        #     result = segment_audio_by_trans(audio_trans_pair)
+        #     if result != "Success":
+        #         print(f"Error: failed to segment audio (audio_fpath, trans_fpath)={audio_trans_pair}, error={result}")
         # process by chunks
-        # for i in range(0, len(audio_trans_pairs_in_category), chunk_size):
-        #     end_i = min(i + chunk_size, len(audio_trans_pairs_in_category))
-        #     audio_trans_pairs_in_category_chunk = audio_trans_pairs_in_category[i:end_i]
-        #     with mp.Pool(processes=8) as pool:
-        #         for result in tqdm(pool.imap_unordered(segment_audio_by_trans, audio_trans_pairs_in_category_chunk), total=len(audio_trans_pairs_in_category_chunk), desc=f"Segmenting category {category}, index={i}-{end_i}..."):
-        #             if result != "Success":
-        #                 print(f"Error: failed to segment audio (audio_fpath, trans_fpath)={result[0]}, error={result[1]}", flush=True)
-        #     print(f"Processed chunk {i}-{end_i}!", flush=True)
+        for i in range(0, len(audio_trans_pairs_in_category), chunk_size):
+            end_i = min(i + chunk_size, len(audio_trans_pairs_in_category))
+            audio_trans_pairs_in_category_chunk = audio_trans_pairs_in_category[i:end_i]
+            print(f"Using multiprocessing, number of processes={args.nprocs}")
+            with mp.Pool(processes=args.nprocs) as pool:
+                for result in tqdm(pool.imap_unordered(segment_audio_by_trans, audio_trans_pairs_in_category_chunk), total=len(audio_trans_pairs_in_category_chunk), desc=f"Segmenting category {category}, index={i}-{end_i}..."):
+                    if result != "Success":
+                        print(f"Error: failed to segment audio (audio_fpath, trans_fpath)={result[0]}, error={result[1]}", flush=True)
+            print(f"Processed chunk {i}-{end_i}!", flush=True)
         gc.collect()
     print("Done")
     
@@ -201,6 +205,18 @@ if __name__ == "__main__":
         "--metadata_dir",
         required=True,
         help="metadata directory",
+    )
+    parser.add_argument(
+        "--nprocs", 
+        type=int,
+        default=8,
+        help="number of processes for segmenting audio files",
+    )
+    parser.add_argument(
+        "--category_index",
+        type=int,
+        default=-1,
+        help="category index to process (default: -1, process all categories)",
     )
 
     args = parser.parse_args()
