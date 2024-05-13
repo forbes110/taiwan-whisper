@@ -1,10 +1,12 @@
 data
 corpus
 tmp
+logs
 # common files to ignore
 *.pyc
 *.pyo
 *.swp
+*.egg-info
 # symlinked directories
 /transformers
 !/transformers/
