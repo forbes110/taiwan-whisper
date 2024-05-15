@@ -64,6 +64,9 @@ from transformers.modeling_outputs import BaseModelOutput
 from transformers.models.whisper.english_normalizer import BasicTextNormalizer, EnglishTextNormalizer
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
+from dataset.cool_dataset import load_cool_dataset
+from utils.model_utils import mix_language_embeddings
+from utils.hallucination_detector import check_hallucination
 
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -137,6 +140,10 @@ class ModelArguments:
             )
         },
     )
+    mix_lang_emb: bool = field(
+        default=False,
+        metadata={"help": "Whether to mix the language embeddings in the teacher model."},
+    )
 
     def __post_init__(self):
         if self.attn_implementation not in [None, "eager", "sdpa", "flash_attention_2"]:
@@ -154,6 +161,13 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
 
+    # for ntu-cool dataset
+    train_dataset_manifest: str = field(
+        default=None,
+        metadata={
+            "help": "The file path of the training dataset manifest'`."
+        },
+    )
     train_dataset_name: str = field(
         default=None,
         metadata={
@@ -837,14 +851,15 @@ def main():
     # 5. Handle the repository creation
     if accelerator.is_main_process:
         if training_args.push_to_hub:
-            if training_args.hub_model_id is None:
-                repo_name = get_full_repo_name(
-                    Path(training_args.output_dir).absolute().name,
-                    token=training_args.hub_token,
-                )
-            else:
-                repo_name = training_args.hub_model_id
-            create_repo(repo_name, exist_ok=True, token=training_args.hub_token)
+            logger.warning("Pushing to the Hub is not yet supported in this script.")
+            # if training_args.hub_model_id is None:
+            #     repo_name = get_full_repo_name(
+            #         Path(training_args.output_dir).absolute().name,
+            #         token=training_args.hub_token,
+            #     )
+            # else:
+            #     repo_name = training_args.hub_model_id
+            # create_repo(repo_name, exist_ok=True, token=training_args.hub_token)
 
             with open(os.path.join(training_args.output_dir, ".gitignore"), "w+") as gitignore:
                 if "wandb" not in gitignore:
@@ -860,19 +875,23 @@ def main():
     set_seed(training_args.seed)
 
     if training_args.do_train:
-        raw_datasets["train"] = load_multiple_datasets(
-            data_args.train_dataset_name,
-            data_args.train_dataset_config_name,
-            splits=data_args.train_split_name,
-            text_column_names=data_args.text_column_name,
-            use_pseudo_labels=data_args.use_pseudo_labels,
-            streaming=data_args.streaming,
-            dataset_samples=data_args.train_dataset_samples,
-            seed=training_args.seed,
-            accelerator=accelerator,
-            cache_dir=data_args.dataset_cache_dir,
-            token=model_args.token,
-        )
+        # raw_datasets["train"] = load_multiple_datasets(
+        #     data_args.train_dataset_name,
+        #     data_args.train_dataset_config_name,
+        #     splits=data_args.train_split_name,
+        #     text_column_names=data_args.text_column_name,
+        #     use_pseudo_labels=data_args.use_pseudo_labels,
+        #     streaming=data_args.streaming,
+        #     dataset_samples=data_args.train_dataset_samples,
+        #     seed=training_args.seed,
+        #     accelerator=accelerator,
+        #     cache_dir=data_args.dataset_cache_dir,
+        #     token=model_args.token,
+        # )
+        # load cool dataset
+        raw_datasets["train"] = load_cool_dataset(data_args.train_dataset_manifest)[0]
+        # print(raw_datasets["train"])
+        # print(next(raw_datasets["train"]))
         raw_datasets_train_features = list(raw_datasets["train"].features.keys())
 
     if training_args.do_eval:
@@ -953,8 +972,9 @@ def main():
         token=model_args.token,
     )
 
-    # override timestamp tokens until tokenizer issues are fixed in transformers
+    # override timestamp tokens until tokenizer issues are fixed in transformers --> what issue? 
     timestamps = [AddedToken("<|%.2f|>" % (i * 0.02), lstrip=False, rstrip=False) for i in range(1500 + 1)]
+    # with logging.disable(logging.WARNING):
     tokenizer.add_tokens(timestamps)
 
     # The teacher model can safely be cast to the dtype of training since we don't
@@ -967,7 +987,8 @@ def main():
         torch_dtype=teacher_dtype,
         attn_implementation=model_args.attn_implementation,
     )
-
+    if model_args.mix_lang_emb:
+        teacher_model = mix_language_embeddings(teacher_model, tokenizer, languages=['zh', 'en'])
     student_model = WhisperForConditionalGeneration.from_pretrained(
         model_args.model_name_or_path,
         config=config,
@@ -1027,7 +1048,8 @@ def main():
     if hasattr(teacher_model.generation_config, "is_multilingual") and teacher_model.generation_config.is_multilingual:
         # We need to set the language and task ids for previously multilingual checkpoints
         is_multilingual = True
-        tokenizer.set_prefix_tokens(language=data_args.language, task=data_args.task, predict_timestamps=False)
+        # fix predict_timestamps=False bug for multilingual models
+        tokenizer.set_prefix_tokens(language=data_args.language, task=data_args.task, predict_timestamps=data_args.timestamp_probability > 0)
         student_model.generation_config.update(
             **{
                 "language": data_args.language,
@@ -1085,7 +1107,7 @@ def main():
     dataloader_num_workers = training_args.dataloader_num_workers
     prefetch_factor = training_args.dataloader_prefetch_factor
 
-    metric = evaluate.load("wer")
+    metric = evaluate.load("cer") # revise to cer for zh setup
     normalizer = (
         BasicTextNormalizer()
         if data_args.language is not None
@@ -1113,6 +1135,11 @@ def main():
 
     # 10.3: filter training data based on WER threshold -> this is KEY to good distillation performance
     def is_wer_in_range(ground_truth, whisper_transcript):
+        if ground_truth is None:
+            # filter by hallucination detector if WER is not available
+            # baseline
+            return True
+            # return check_hallucination(whisper_transcript)
         norm_ground_truth = normalizer(ground_truth)
         if whisper_transcript is not None and whisper_transcript.upper() == whisper_transcript:
             # filter entirely upper-case transcriptions: these are erroneous generations from large-v3
@@ -1123,7 +1150,7 @@ def main():
             return wer < wer_threshold
         else:
             # filter automatically since we can't know the WER
-            return False
+            return False # baseline
 
     filter_by_wer_threshold = partial(
         raw_datasets["train"].filter,
@@ -1156,11 +1183,15 @@ def main():
         # process text targets - for training these are the Whisper-generated pseudo-labels
         input_str_batched = batch[train_text_column_name]
         condition_on_prev_batched = batch.get("condition_on_prev", len(input_str_batched) * [None])
-
+        # last_segment_str_batched = batch.get("last_segment_transcript", len(input_str_batched) * [None]) # we deal with this in cool_dataset.py
+        assert len(input_str_batched) == len(condition_on_prev_batched), "Batched inputs must be the same length"
+        
         all_token_ids = []
         all_token_ids_unprompted = []
-        for prev_ids, input_str in zip(condition_on_prev_batched, input_str_batched):
-            token_ids = tokenizer(input_str, add_special_tokens=not use_pseudo_labels).input_ids
+        for prev_ids_or_str, input_str in zip(condition_on_prev_batched, input_str_batched):
+            if type(prev_ids_or_str) == str:
+                prev_ids = tokenizer(prev_ids_or_str, add_special_tokens=False).input_ids
+            token_ids = tokenizer(input_str, add_special_tokens=not "<|transcribe|>" in input_str).input_ids
 
             # check whether we have timestamps in the PLs and filter if required
             has_timestamps = len(set(token_ids) & set(timestamp_ids)) > 0
@@ -1319,6 +1350,7 @@ def main():
     # 12. Define Training Schedule
     # Store some constants
     per_device_train_batch_size = int(training_args.per_device_train_batch_size)
+    logging.info(f"per_device_train_batch_size: {per_device_train_batch_size}")
     train_batch_size = per_device_train_batch_size * accelerator.num_processes
     gradient_accumulation_steps = int(training_args.gradient_accumulation_steps)
     per_device_eval_batch_size = int(training_args.per_device_eval_batch_size)
@@ -1444,6 +1476,8 @@ def main():
     ):
         student_model.train()
         teacher_model.eval()
+        # print(batch.keys())
+        # print(batch["input_features"].shape)
 
         student_outputs = student_model(**batch)
         with torch.no_grad():

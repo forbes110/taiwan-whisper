@@ -2,6 +2,9 @@ data
 corpus
 tmp
 logs
+student_models
+wandb
+output
 # common files to ignore
 *.pyc
 *.pyo

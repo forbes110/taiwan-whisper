@@ -57,6 +57,8 @@ from transformers.models.whisper.english_normalizer import BasicTextNormalizer, 
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 
+from utils.model_utils import mix_language_embeddings
+
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.34.0.dev0")
@@ -142,6 +144,10 @@ class ModelArguments:
     attn_type: Optional[str] = field(
         default=None,
         metadata={"help": "Deprecated. Use `attn_implementation` instead."},
+    )
+    mix_lang_emb: bool = field(
+        default=False,
+        metadata={"help": "Whether to mix the language embeddings in the pseudo-labelling model."},
     )
 
     def __post_init__(self):
@@ -563,6 +569,8 @@ def main():
         attn_implementation=model_args.attn_implementation,
     )
     model.eval()
+    if model_args.mix_lang_emb:
+        model = mix_language_embeddings(model, tokenizer, languages=["en", "zh"], target_language="zh", weights=[0.5, 0.5])
 
     if model.config.decoder_start_token_id is None:
         raise ValueError("Make sure that `config.decoder_start_token_id` is correctly defined")
@@ -790,7 +798,7 @@ def main():
     accelerator.wait_for_everyone()
 
     # 8. Load Metric
-    metric = evaluate.load("wer")
+    metric = evaluate.load("cer")
 
     def compute_metrics(preds, labels, file_ids):
         # replace padded labels by the padding token
@@ -814,7 +822,7 @@ def main():
 
         wer = 100 * metric.compute(predictions=norm_pred_str, references=norm_label_str)
 
-        return {"wer": wer}, pred_str, label_str, norm_pred_str, norm_label_str, file_ids
+        return {"cer": wer}, pred_str, label_str, norm_pred_str, norm_label_str, file_ids
 
     def filter_eot_tokens(preds):
         for idx in range(len(preds)):

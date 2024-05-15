@@ -15,15 +15,15 @@ VALID_SID_FIRST_CHARS = [
     '7', # Management
     '8', # Public Health
     '9', # EECS
-    'A', # Law School
-    'B', # Life Science
-    'E', # Continuing Education Division
-    'K', # Advanced Technology
-    'F', # D-school
-    'H', # D-school
-    'Z', # D-school
-    'P', # Program
-    'Q', # Academic Writing Center
+    'A', # Law School 10
+    'B', # Life Science 11
+    'E', # Continuing Education Division 12
+    'K', # Advanced Technology 13
+    'F', # D-school 14
+    'H', # D-school 15
+    'Z', # D-school 16
+    'P', # Program 17
+    'Q', # Academic Writing Center 18
 ]
 
 def normalize_sid(raw_sid):

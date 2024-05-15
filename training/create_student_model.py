@@ -25,6 +25,7 @@ import logging
 import numpy as np
 import torch
 from transformers import GenerationConfig, WhisperForConditionalGeneration, WhisperProcessor
+from utils.model_utils import mix_language_embeddings
 
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,12 @@ def parse_args():
         default=None,
         help="Where to store the pretrained models downloaded from huggingface.co",
     )
+    parser.add_argument(
+        "--mix_lang_emb",
+        default=False,
+        action="store_true",
+        help="Whether to mix the language embeddings in the student model.",
+    )
 
     args = parser.parse_args()
     return args
@@ -98,6 +105,7 @@ def init_student_model_from_teacher(
     push_to_hub=None,
     cache_dir=None,
     subfolder="",
+    mix_lang_emb=False,
 ):
     if decoder_layers_numbers is not None and len(decoder_layers_numbers) != decoder_layers:
         raise ValueError(
@@ -113,6 +121,8 @@ def init_student_model_from_teacher(
     processor = WhisperProcessor.from_pretrained(teacher_checkpoint)
     generation_config = GenerationConfig.from_pretrained(teacher_checkpoint)
     generation_config.forced_decoder_ids = None
+    if mix_lang_emb:
+        teacher_model = mix_language_embeddings(teacher_model, processor.tokenizer, languages=["en", "zh"], target_language="zh", weights=[0.5, 0.5])
 
     teacher_config = teacher_model.config
     teacher_encoder_layers = teacher_config.encoder_layers
@@ -228,4 +238,5 @@ if __name__ == "__main__":
         push_to_hub=args.push_to_hub,
         cache_dir=args.cache_dir,
         subfolder=args.subfolder,
+        mix_lang_emb=args.mix_lang_emb,
     )

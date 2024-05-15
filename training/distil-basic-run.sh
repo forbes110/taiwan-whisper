@@ -1,0 +1,41 @@
+accelerate launch run_distillation.py \
+  --model_name_or_path "/home/andybi7676/distil-whisper/student_models/basic" \
+  --teacher_model_name_or_path "openai/whisper-large-v2" \
+  --train_dataset_manifest "/home/andybi7676/distil-whisper/corpus/ntu_cool/manifest/train-200.tsv" \
+  --train_dataset_name "" \
+  --train_split_name "" \
+  --text_column_name "" \
+  --train_dataset_samples "" \
+  --eval_dataset_name "/home/andybi7676/distil-whisper/corpus/ntu_cool/data/common_voice_16_1_zh-TW_pseudo_labelled" \
+  --eval_split_name "test" \
+  --eval_text_column_name "sentence" \
+  --eval_steps 1000 \
+  --save_steps 1000 \
+  --warmup_steps 50 \
+  --learning_rate 0.0001 \
+  --lr_scheduler_type "constant_with_warmup" \
+  --timestamp_probability 0.2 \
+  --condition_on_prev_probability 0.2 \
+  --language "zh" \
+  --task "transcribe" \
+  --logging_steps 25 \
+  --save_total_limit 1 \
+  --max_steps 5000 \
+  --wer_threshold 20 \
+  --per_device_train_batch_size 4 \
+  --per_device_eval_batch_size 8 \
+  --dataloader_num_workers 8 \
+  --preprocessing_num_workers 8 \
+  --ddp_timeout 7200 \
+  --dtype "float16" \
+  --attn_implementation "sdpa" \
+  --output_dir "./output" \
+  --do_train \
+  --do_eval \
+  --gradient_checkpointing \
+  --overwrite_output_dir \
+  --predict_with_generate \
+  --freeze_encoder \
+  --freeze_embed_positions \
+  --streaming True \
+  --mix_lang_emb True
