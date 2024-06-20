@@ -5,6 +5,8 @@ logs
 student_models
 wandb
 output
+inference_results
+packages
 # common files to ignore
 *.pyc
 *.pyo

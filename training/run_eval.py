@@ -31,6 +31,7 @@ import evaluate
 import numpy as np
 import torch
 import transformers
+from torch.utils.data import DataLoader
 from datasets import DatasetDict, IterableDatasetDict, load_dataset
 from tqdm import tqdm
 from transformers import (
@@ -46,6 +47,8 @@ from transformers.models.whisper.modeling_whisper import WhisperForCausalLM
 from transformers.utils import check_min_version, is_accelerate_available
 from transformers.utils.versions import require_version
 
+from utils.model_utils import mix_language_embeddings
+from utils.evaluation import MixErrorRate
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.34.0.dev0")
@@ -268,6 +271,10 @@ class DataTrainingArguments:
         metadata={
             "help": "Text prompt to condition the generation on. Useful for controlling the style of transcription and predicting named entities."
         },
+    )
+    mix_lang_emb: bool = field(
+        default=False,
+        metadata={"help": "Whether to mix the language embeddings in the pseudo-labelling model."},
     )
 
 
@@ -494,6 +501,9 @@ def main():
         cache_dir=data_args.cache_dir,
         variant=data_args.model_variant,
     )
+    if data_args.mix_lang_emb:
+        logger.info("Mixing language embeddings...")
+        model = mix_language_embeddings(model, processor.tokenizer, languages=['zh', 'en'])
     model.to("cuda:0", dtype=dtype)
 
     model_pipeline = None
@@ -563,6 +573,8 @@ def main():
                 return_tensors="pt",
                 truncation=False,
                 padding="longest",
+                # padding="max_length",
+                # max_length=3000,
                 return_attention_mask=True,
             )
             if inputs.input_features.shape[-1] < 3000:
@@ -605,7 +617,8 @@ def main():
         logger.info(f"Data preprocessing finished. Files cached at {cache}.")
         return
 
-    metric = evaluate.load("wer")
+    # metric = evaluate.load("cer")
+    metric = MixErrorRate()
 
     def compute_metrics(pred_str, label_str):
         # normalize everything and re-compute the WER
@@ -722,6 +735,8 @@ def main():
 
         datasets_evaluated_progress_bar.write(f"Start benchmarking {split}...")
         result_iter = iter(result_datasets[split])
+        # TODO: use dataloader to speed up the process
+        # result_iter = DataLoader(result_datasets[split], batch_size=1, num_workers=8, pin_memory=True, shuffle=False, drop_last=False, )
         for result in tqdm(result_iter, desc="Samples", position=1):
             times_audio_total += result["length_in_s"]
             times_transcription_total += result["time"]

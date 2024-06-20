@@ -67,6 +67,7 @@ from transformers.utils.versions import require_version
 from dataset.cool_dataset import load_cool_dataset
 from utils.model_utils import mix_language_embeddings
 from utils.hallucination_detector import check_hallucination
+from utils.evaluation import MixErrorRate
 
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -160,12 +161,17 @@ class DataTrainingArguments:
     """
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
-
     # for ntu-cool dataset
     train_dataset_manifest: str = field(
         default=None,
         metadata={
             "help": "The file path of the training dataset manifest'`."
+        },
+    )
+    train_dataset_root: str = field(
+        default=None,
+        metadata={
+            "help": "The root of the training dataset categorized data root'`."
         },
     )
     train_dataset_name: str = field(
@@ -314,6 +320,18 @@ class DataTrainingArguments:
             "transcriptions."
         },
     )
+    is_prefiltered: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether the dataset has already been prefiltered for hallucinations."
+        },
+    )
+    skip_audio_length_filtering: bool = field(
+        default=False,
+        metadata={
+            "help": "Whether to skip filtering audio files based on their duration."
+        },
+    )
     use_pseudo_labels: bool = field(
         default=True,
         metadata={
@@ -402,6 +420,15 @@ class DistillationTrainingArguments(Seq2SeqTrainingArguments):
             "help": (
                 "The data type (dtype) in which to run training. One of `float32` (full-precision), "
                 "`float16` or `bfloat16` (both half-precision)."
+            )
+        },
+    )
+    # add save valid best arg
+    save_valid_best: Optional[bool] = field(
+        default=True,
+        metadata={
+            "help": (
+                "Whether to save the model with the best validation loss."
             )
         },
     )
@@ -817,6 +844,7 @@ def main():
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         level=logging.INFO,
+        filename=os.path.join(training_args.output_dir, "log.txt")
     )
     # Log a small summary on each proces
     logger.warning(
@@ -873,7 +901,7 @@ def main():
 
     # set seed for determinism
     set_seed(training_args.seed)
-
+    train_dataset_len = None
     if training_args.do_train:
         # raw_datasets["train"] = load_multiple_datasets(
         #     data_args.train_dataset_name,
@@ -889,7 +917,8 @@ def main():
         #     token=model_args.token,
         # )
         # load cool dataset
-        raw_datasets["train"] = load_cool_dataset(data_args.train_dataset_manifest)[0]
+        raw_datasets["train"], audio_fpaths = load_cool_dataset(data_args.train_dataset_manifest, root=data_args.train_dataset_root)
+        train_dataset_len = len(audio_fpaths)
         # print(raw_datasets["train"])
         # print(next(raw_datasets["train"]))
         raw_datasets_train_features = list(raw_datasets["train"].features.keys())
@@ -1074,6 +1103,7 @@ def main():
 
     accelerator.wait_for_everyone()
     processor = WhisperProcessor.from_pretrained(training_args.output_dir)
+    processor.get_decoder_prompt_ids(language=data_args.language, task=data_args.task, no_timestamps=data_args.timestamp_probability==0.0)
 
     # 9. Resample speech dataset: `datasets` takes care of automatically loading and resampling the audio,
     # so we just need to set the correct target sampling rate.
@@ -1101,13 +1131,16 @@ def main():
 
     decoder_start_token_id = student_model.config.decoder_start_token_id  # <|startoftranscript|>
     decoder_prev_token_id = tokenizer.all_special_ids[-3]  # <|startofprev|>
+    whitespace_token_id = 220
     prompt_cutoff_length = max_label_length // 2
 
     num_workers = data_args.preprocessing_num_workers
     dataloader_num_workers = training_args.dataloader_num_workers
     prefetch_factor = training_args.dataloader_prefetch_factor
 
-    metric = evaluate.load("cer") # revise to cer for zh setup
+    # metric = evaluate.load("cer") 
+    # # revise to mer for zh setup
+    metric = MixErrorRate()
     normalizer = (
         BasicTextNormalizer()
         if data_args.language is not None
@@ -1138,8 +1171,11 @@ def main():
         if ground_truth is None:
             # filter by hallucination detector if WER is not available
             # baseline
-            return True
-            # return check_hallucination(whisper_transcript)
+            # return True
+            is_hallucinated = check_hallucination(whisper_transcript)
+            if is_hallucinated:
+                logger.info(f"Found hallucination: {whisper_transcript}, skip this example!")
+            return not is_hallucinated
         norm_ground_truth = normalizer(ground_truth)
         if whisper_transcript is not None and whisper_transcript.upper() == whisper_transcript:
             # filter entirely upper-case transcriptions: these are erroneous generations from large-v3
@@ -1158,13 +1194,15 @@ def main():
         input_columns=["text", "whisper_transcript"],
     )
 
-    if wer_threshold is not None and use_pseudo_labels:
+    if wer_threshold is not None and use_pseudo_labels and not data_args.is_prefiltered:
         with accelerator.main_process_first():
             raw_datasets["train"] = (
                 filter_by_wer_threshold(num_proc=num_workers, desc="filtering train dataset by wer")
                 if not data_args.streaming
                 else filter_by_wer_threshold()
             )
+    else:
+        logger.info("Metadata has been pre-filtered. Skipping filtering of training data")
 
     # 10.4: pre-process training/evaluation datasets
     def prepare_train_dataset(batch):
@@ -1215,7 +1253,7 @@ def main():
             if prev_ids is not None:
                 if has_timestamps and not predict_timestamps:
                     # filter timestamp ids from prompt when not predicting timestamps
-                    prev_ids = [token for token in prev_ids if token < timestamp_begin]
+                    prev_ids = [token if token < timestamp_begin else whitespace_token_id for token in prev_ids ]
 
                 # check that the length of the prompt does not exceed more than half the max label length (224)
                 if len(prev_ids) > prompt_cutoff_length:
@@ -1285,12 +1323,13 @@ def main():
     filter_by_audio_fn = partial(
         vectorized_datasets.filter, function=is_audio_in_length_range, input_columns=["input_length"]
     )
-    with accelerator.main_process_first():
-        vectorized_datasets = (
-            filter_by_audio_fn(num_proc=num_workers, desc="filtering train dataset by audio length")
-            if not data_args.streaming
-            else filter_by_audio_fn()
-        )
+    if not data_args.skip_audio_length_filtering:
+        with accelerator.main_process_first():
+            vectorized_datasets = (
+                filter_by_audio_fn(num_proc=num_workers, desc="filtering train dataset by audio length")
+                if not data_args.streaming
+                else filter_by_audio_fn()
+            )
 
     # 10.6: Filter training data with labels longer than `max_label_length`
     def is_labels_in_length_range(labels):
@@ -1350,14 +1389,15 @@ def main():
     # 12. Define Training Schedule
     # Store some constants
     per_device_train_batch_size = int(training_args.per_device_train_batch_size)
-    logging.info(f"per_device_train_batch_size: {per_device_train_batch_size}")
+    logger.info(f"per_device_train_batch_size: {per_device_train_batch_size}")
     train_batch_size = per_device_train_batch_size * accelerator.num_processes
     gradient_accumulation_steps = int(training_args.gradient_accumulation_steps)
     per_device_eval_batch_size = int(training_args.per_device_eval_batch_size)
+    logger.info(f"overall_train_batch_size: {train_batch_size} * {gradient_accumulation_steps}")
 
-    if not data_args.streaming and training_args.max_steps < 0:
+    if (train_dataset_len != None) and training_args.max_steps < 0:
         num_epochs = int(training_args.num_train_epochs)
-        steps_per_epoch = len(vectorized_datasets["train"]) // (train_batch_size * gradient_accumulation_steps)
+        steps_per_epoch = train_dataset_len // (train_batch_size * gradient_accumulation_steps)
         total_train_steps = steps_per_epoch * num_epochs
     elif training_args.max_steps > 0:
         logger.info("max_steps is given, it will override any value given in num_train_epochs")
@@ -1452,6 +1492,12 @@ def main():
                 "task": data_args.task,
             }
         )
+    accelerator.wait_for_everyone()
+    # if accelerator.is_main_process:
+    #     logger.info(gen_kwargs)
+    #     logger.info(student_model.generation_config)
+    #     logger.info(student_model.config.forced_decoder_ids)
+    #     assert False, "stop for debug"
 
     # 15. Prepare everything with accelerate
     student_model, teacher_model, optimizer, lr_scheduler = accelerator.prepare(
@@ -1592,6 +1638,7 @@ def main():
             vectorized_datasets["train"] = vectorized_datasets["train"].shuffle(training_args.seed)
     else:
         resume_step = None
+    best_wer = 100.0
 
     for epoch in range(epochs_trained, num_epochs):
         vectorized_datasets["train"] = vectorized_datasets["train"].shuffle(training_args.seed)
@@ -1724,6 +1771,26 @@ def main():
                                 step=cur_step,
                                 prefix=eval_split,
                             )
+                        if training_args.save_valid_best:
+                            if eval_metrics["wer"] < best_wer:
+                                best_wer = eval_metrics["wer"]
+                                best_wer_step = cur_step
+                                best_wer_epoch = epoch
+                                # save the best model
+                                valid_intermediate_dir = os.path.join(training_args.output_dir, f"best-checkpoint-epoch-{best_wer_epoch}") # one valid best for each epoch at most
+                                accelerator.save_state(output_dir=valid_intermediate_dir)
+                                accelerator.wait_for_everyone()
+                                if accelerator.is_main_process:
+                                    steps_record_fpath = os.path.join(valid_intermediate_dir, "best_steps.txt")
+                                    with open(steps_record_fpath, "w") as _f:
+                                        _f.write(f"step: {best_wer_step}, wer: {best_wer}, epoch: {best_wer_epoch}")
+                                if training_args.push_to_hub:
+                                    upload_folder(
+                                        folder_path=training_args.output_dir,
+                                        repo_id=repo_name,
+                                        repo_type="model",
+                                        commit_message=f"Saving best weights of step {cur_step}",
+                                    )
 
                         # Print metrics and update progress bar
                         steps_trained_progress_bar.write(

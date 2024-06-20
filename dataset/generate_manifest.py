@@ -45,6 +45,13 @@ def get_parser():
         help="if set, path must contain this substring for a file to be included in the manifest",
     )
     parser.add_argument(
+        "--path-must-not-contain",
+        default=None,
+        type=str,
+        # metavar="FRAG",
+        help="if set, path must contain this substring for a file to be included in the manifest",
+    )
+    parser.add_argument(
         "--sort",
         default=False,
         action="store_true",
@@ -90,7 +97,7 @@ def main(args):
         
         file_paths = [os.path.realpath(fname) for fname in glob.iglob(search_path, recursive=True)]
         if args.get_frames:
-            pool = mp.Pool(processes=8)
+            pool = mp.Pool(processes=64)
             file_paths_and_frames = list(tqdm.tqdm(pool.imap_unordered(get_frames, file_paths), total=len(file_paths)))
         else:
             file_paths_and_frames = [(file_path, None) for file_path in file_paths]
@@ -99,6 +106,8 @@ def main(args):
 
         for file_path, frame in file_paths_and_frames:
             if args.path_must_contain and args.path_must_contain not in file_path:
+                continue
+            if args.path_must_not_contain and args.path_must_not_contain in file_path:
                 continue
 
             dest = train_f if rand.random() > args.valid_percent else valid_f
