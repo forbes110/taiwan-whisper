@@ -16,7 +16,7 @@ audio_column_name="audio"
 # audio_column_name="audio"
 # id_column_name="path"
 
-accelerate launch --num_processes 4 --main_process_port 29500 run_pseudo_labelling.py \
+accelerate launch --num_processes 2 --main_process_port 29500 run_pseudo_labelling.py \
   --model_name_or_path "openai/whisper-large-v2" \
   --dataset_name $dataset_name \
   --dataset_config_name $dataset_config_name \
@@ -24,10 +24,10 @@ accelerate launch --num_processes 4 --main_process_port 29500 run_pseudo_labelli
   --text_column_name $text_column_name \
   --audio_column_name $audio_column_name \
   --id_column_name $id_column_name \
-  --output_dir "$root/data/ntuml2021_longform" \
+  --output_dir "$root/corpus/data/ntuml2021_longform" \
   --wandb_project "distil-whisper-labelling" \
-  --per_device_eval_batch_size 16 \
-  --dtype "bfloat16" \
+  --per_device_eval_batch_size 8 \
+  --dtype "float16" \
   --attn_implementation "sdpa" \
   --logging_steps 500 \
   --max_label_length 256 \

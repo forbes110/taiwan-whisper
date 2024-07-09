@@ -32,7 +32,7 @@ import numpy as np
 import torch
 import transformers
 from torch.utils.data import DataLoader
-from datasets import DatasetDict, IterableDatasetDict, load_dataset
+from datasets import DatasetDict, IterableDatasetDict, load_dataset, load_from_disk
 from tqdm import tqdm
 from transformers import (
     HfArgumentParser,
@@ -460,6 +460,7 @@ def main():
 
     # load multiple eval sets
     for dataset_dict in tqdm(dataset_names_dict, desc="Loading datasets..."):
+        # sub_dataset = load_from_disk(
         sub_dataset = load_dataset(
             dataset_dict["name"],
             dataset_dict["config"],
@@ -468,6 +469,7 @@ def main():
             streaming=data_args.streaming,
             num_proc=data_args.preprocessing_num_workers,
         )
+        # sub_dataset = sub_dataset[dataset_dict["split"]]
         if dataset_dict["text_column_name"] not in list(sub_dataset.features.keys()):
             raise ValueError(
                 f"`--text_column_name` {dataset_dict['text_column_name']} not found in the evaluation "

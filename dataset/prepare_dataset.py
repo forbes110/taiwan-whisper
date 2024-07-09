@@ -60,17 +60,19 @@ def categorize_audio(audio_dir, output_dir, metadata_dir):
 def analyze_categories(output_dir):
     time_distribution_over_categories = defaultdict(int)
     categories = CATEGORIES
-    for category in tqdm(categories, total=len(categories), desc="Analyzing categories"):
-        audio_fpaths = glob.glob(osp.join(output_dir, category, '*.flac'))
-        frames = 0
-        for audio_fpath in tqdm(audio_fpaths, total=len(audio_fpaths), desc=f"Analyzing category {category}"):
-            data, sr = sf.read(audio_fpath)
-            assert sr==SAMPLE_RATE, f"Error: {audio_fpath} has sample rate {sr}, expected {SAMPLE_RATE}"
-            frames += len(data)
-        time_distribution_over_categories[category] = frames / SAMPLE_RATE
+    with open(osp.join(output_dir, 'categories.tsv'), 'w') as fw:
+        for category in tqdm(categories, total=len(categories), desc="Analyzing categories"):
+            audio_fpaths = glob.glob(osp.join(output_dir, category, '*.flac'))
+            frames = 0
+            for audio_fpath in tqdm(audio_fpaths, total=len(audio_fpaths), desc=f"Analyzing category {category}"):
+                finfo = sf.info(audio_fpath)
+                assert finfo.samplerate==SAMPLE_RATE, f"Error: {audio_fpath} has sample rate {finfo.samplerate}, expected {SAMPLE_RATE}"
+                frames += finfo.frames
+                fw.write(f"{category}\t{audio_fpath}\t{finfo.frames}\n")
+            time_distribution_over_categories[category] = frames / SAMPLE_RATE
     print("Time distribution over categories:")
     for category, time in time_distribution_over_categories.items():
-        print(f"{category}: {time} seconds")
+        print(f"{category}: {time} seconds ({time/3600} hours)")
 
 # segment audio based on transcriptions
 def segment_audio_by_trans(audio_trans_pair):
@@ -83,7 +85,7 @@ def segment_audio_by_trans(audio_trans_pair):
         #     print(f"Warning: {audio_output_dir} already exists, skip")
         #     return "Success"
         os.makedirs(audio_output_dir, exist_ok=True)
-        data, sr = sf.read(audio_fpath)
+        # data, sr = sf.read(audio_fpath)
         segments = read_vtt(trans_fpath)
         prev_end_frame = 0
         prev_text = ""
@@ -100,14 +102,14 @@ def segment_audio_by_trans(audio_trans_pair):
 
             if e_frame - prev_end_frame > SEGMENT_LENGTH:
                 cur_end_frame = prev_end_frame + SEGMENT_LENGTH
-                segmented_data = data[prev_end_frame:cur_end_frame]
+                # segmented_data = data[prev_end_frame:cur_end_frame]
                 if cur_end_frame - s_frame > ADD_CONTINUED_TOKEN_THRESHOLD * SAMPLE_RATE:
                     cur_text += s_timestamp
                     cur_text += "<|continued|>"
                 cur_text += "<|endoftext|>"
                 # segmented_data_with_trans_list.append((segmented_data, cur_text))
-                segment_output_fpath = osp.join(audio_output_dir, f"{vid}_{prev_end_frame}-{cur_end_frame}.flac")
-                sf.write(segment_output_fpath, segmented_data, SAMPLE_RATE)
+                # segment_output_fpath = osp.join(audio_output_dir, f"{vid}_{prev_end_frame}-{cur_end_frame}.flac")
+                # sf.write(segment_output_fpath, segmented_data, SAMPLE_RATE)
                 with open(osp.join(audio_output_dir, f"{vid}_{prev_end_frame}-{cur_end_frame}.txt"), 'w') as f:
                     f.write(cur_text + "\n")
                     f.write("\n" + s_timestamp + text + e_timestamp + "\n")

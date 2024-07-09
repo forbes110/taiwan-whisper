@@ -142,10 +142,12 @@ def check_single_trans(input, skip_special_tokens=True, metric=None, threshold=0
         return idx, True
     return idx, False
 
-def whisper_checker(original_tsv, hyps_tsv, output_dir, threshold=0.6, num_workers=32, phonemize=False, mix_detection=False, empty_error_rate=1.0, additional_fname=""):
+def whisper_checker(original_tsv, hyps_tsv, output_dir, threshold=0.6, num_workers=32, phonemize=False, mix_detection=False, empty_error_rate=1.0, additional_fname="", overwrite_root=""):
     # load original tsv
     with open(original_tsv, "r") as f:
         root = f.readline().strip()
+        if overwrite_root:
+            root = overwrite_root
         audio_subfpaths = [l.strip() for l in f.readlines()]
         audio_fpaths = [osp.join(root, audio_subfpath) for audio_subfpath in audio_subfpaths]
         trans_fpaths = [audio_fpath.replace('flac', 'txt') for audio_fpath in audio_fpaths]
@@ -257,7 +259,8 @@ def main(args):
             phonemize=args.phonemize,
             mix_detection=args.mix_detection,
             empty_error_rate=args.empty_error_rate,
-            additional_fname=args.additional_fname
+            additional_fname=args.additional_fname,
+            overwrite_root=args.overwrite_root
         )
     # print(f"Transcript directory: {args.trans_dir}")
     # trans_fpaths = glob.glob(osp.join(args.trans_dir, "*.vtt"))
@@ -361,6 +364,11 @@ if __name__ == "__main__":
         "--additional_fname",
         default="",
         help="Additional filename for the output tsv"
+    )
+    parser.add_argument(
+        "--overwrite_root",
+        default="",
+        help="Overwrite the root directory in the original tsv"
     )
     args = parser.parse_args()
 
