@@ -181,6 +181,11 @@ class DataTrainingArguments:
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
 
+    data_files: Optional[str] = field(
+        default=None,
+        metadata={"help": "The CSV file containing the dataset."}
+    )
+    
     dataset_name: str = field(
         default=None,
         metadata={"help": "The name of the dataset to use (via the datasets library)."},
@@ -505,14 +510,15 @@ def main():
     for split in data_splits:
         with accelerator.main_process_first():
             raw_datasets[split] = load_dataset(
-                data_args.dataset_name,
-                data_args.dataset_config_name,
-                split=split,
+                "csv",
+                data_files={"test": data_args.data_files},
+                split="test",
                 cache_dir=data_args.dataset_cache_dir,
                 token=token,
                 streaming=data_args.streaming,
-                num_proc=data_args.preprocessing_num_workers if not data_args.streaming else None,
+                num_proc=data_args.preprocessing_num_workers if not data_args.streaming else None
             )
+            
 
     if data_args.audio_column_name not in next(iter(raw_datasets.values())).column_names:
         raise ValueError(
@@ -648,6 +654,7 @@ def main():
         condition_on_prev = []
         audio_sample = audio[0]
         text_sample = text[0]
+                
 
         for idx in range(1, len(audio)):
             prev_speaker = speaker_id[idx - 1]
@@ -677,7 +684,7 @@ def main():
                 condition_on_prev.append(1)
                 audio_sample = audio[idx]
                 text_sample = text[idx]
-
+        
         batch[audio_column_name] = [{"array": array, "sampling_rate": sampling_rate} for array in concatenated_audio]
         batch[text_column_name] = concatenated_text
         batch[id_column_name] = concatenated_speaker
@@ -701,7 +708,7 @@ def main():
         raw_datasets = raw_datasets.cast_column(
             audio_column_name, datasets.features.Audio(sampling_rate=sampling_rate)
         )
-        pretty_name = data_args.dataset_name.split("/")[-1]
+        pretty_name = data_args.data_files.split("/")[-1]
 
         def postprocess_ids(speaker_ids, indices):
             speaker_ids_formatted = []
@@ -806,18 +813,21 @@ def main():
             labels[idx][labels[idx] == -100] = tokenizer.pad_token_id
 
         pred_str = tokenizer.batch_decode(preds, skip_special_tokens=False, decode_with_timestamps=return_timestamps)
+        
         # we do not want to group tokens when computing the metrics
         label_str = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
         # normalize everything and re-compute the WER
         norm_pred_str = [normalizer(pred) for pred in pred_str]
+                
         norm_label_str = [normalizer(label) for label in label_str]
         # for logging, we need the pred/labels to match the norm_pred/norm_labels, so discard any filtered samples here
         pred_str = [pred_str[i] for i in range(len(norm_pred_str)) if len(norm_label_str[i]) > 0]
         label_str = [label_str[i] for i in range(len(norm_label_str)) if len(norm_label_str[i]) > 0]
         file_ids = [file_ids[i] for i in range(len(file_ids)) if len(norm_label_str[i]) > 0]
         # filtering step to only evaluate the samples that correspond to non-zero normalized references:
-        norm_pred_str = [norm_pred_str[i] for i in range(len(norm_pred_str)) if len(norm_label_str[i]) > 0]
+        norm_pred_str = [norm_pred_str[i] for i in range(len(norm_pred_str)) if len(norm_label_str[i]) > 0]        
+        
         norm_label_str = [norm_label_str[i] for i in range(len(norm_label_str)) if len(norm_label_str[i]) > 0]
 
         wer = 100 * metric.compute(predictions=norm_pred_str, references=norm_label_str)
@@ -872,6 +882,7 @@ def main():
     model = accelerator.prepare(model)
 
     def eval_step_with_save(split="eval"):
+        
         # ======================== Evaluating ==============================
         eval_preds = []
         eval_labels = []
@@ -899,11 +910,14 @@ def main():
         split = split.replace(".", "-").split("/")[-1]
         output_csv = os.path.join(output_dir, f"{split}-transcription.csv")
 
+
+        # TODO: check here for output with tstamps
         for step, (batch, file_ids) in enumerate(zip(batches, file_loader)):
             # Generate predictions and pad to max generated length
             generate_fn = model.module.generate if accelerator.num_processes > 1 else model.generate
             generated_ids = generate_fn(batch["input_features"].to(dtype=torch_dtype), **gen_kwargs)
             generated_ids = accelerator.pad_across_processes(generated_ids, dim=1, pad_index=tokenizer.pad_token_id)
+            
             # Gather all predictions and targets
             generated_ids, labels = accelerator.gather_for_metrics((generated_ids, batch["labels"]))
             eval_preds.extend(generated_ids.cpu().numpy())
@@ -920,6 +934,7 @@ def main():
                         pred_ids, skip_special_tokens=False, decode_with_timestamps=return_timestamps
                     )
                 )
+                
                 csv_data = [[eval_ids[i], pred_str[i]] for i in range(len(eval_preds))]
 
                 with open(output_csv, "w", encoding="UTF8", newline="") as f:
@@ -970,12 +985,13 @@ def main():
             )
 
         batches.write(f"Saving final transcriptions for split {split}.")
-        csv_data = [[eval_ids[i], eval_preds[i]] for i in range(len(eval_preds))]
+        csv_data = [[eval_ids[i], pred_str[i]] for i in range(len(eval_preds))]
         with open(output_csv, "w", encoding="UTF8", newline="") as f:
             writer = csv.writer(f)
             # write multiple rows
             writer.writerow(["file_id", "whisper_transcript"])
             writer.writerows(csv_data)
+
 
         # Print metrics
         logger.info(wer_desc)

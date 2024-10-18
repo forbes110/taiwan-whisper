@@ -4,6 +4,7 @@ tmp
 logs
 student_models
 wandb
+whisper
 output
 inference_results
 packages
@@ -12,6 +13,9 @@ packages
 *.pyo
 *.swp
 *.egg-info
+__pycache__/
+**/__pycache__/
+
 # symlinked directories
 /transformers
 !/transformers/
