@@ -10,18 +10,29 @@ def resample_and_convert_to_flac(input_path):
     """
     Check the sample rate of the audio file using pydub.
     If it is not 16000 Hz, resample it and convert to FLAC.
+
+    Args:
+        input_path (str): Path to the input audio file
+
+    Returns:
+        str: Success message if the conversion succeeded, otherwise an error message
     """
     try:
         # Load audio file using pydub
         audio = AudioSegment.from_file(input_path)
+        
+        # Check the sample rate of the audio file
 
         # Resample the audio if needed
         if audio.frame_rate != TARGET_SAMPLE_RATE:
+            # Resample the audio if needed
             print(f"Resampling {input_path} from {audio.frame_rate} to {TARGET_SAMPLE_RATE} Hz")
             audio = audio.set_frame_rate(TARGET_SAMPLE_RATE)
+        
 
         # Generate new filename with .flac extension
         flac_path = input_path.replace(".m4a", ".flac")
+        
 
         # Export the audio to FLAC format
         audio.export(flac_path, format="flac")
@@ -57,5 +68,6 @@ def process_directory(directory, max_workers=4):
 
 if __name__ == "__main__":
     # Example usage: Change 'directory' to your target path
-    directory = "/mnt/dataset_1T/tmp_dir/Gooaye_tmp"
+    directory = "/mnt/dataset_1T/"
     process_directory(directory, max_workers=8)  # Adjust number of threads if needed
+ d

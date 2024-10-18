@@ -21,14 +21,9 @@ ADD_CONTINUED_TOKEN_THRESHOLD = 1.0  # (secs)
 1. how to handle overlapping?
 2. why there are txt after 30s in 30?, 
     e.g., 
-    <|18.40|> ... 現在最流行的直接你什麼是你沒做到這個打你媽確診 想要超來講你媽確診<|30.00|>
+    <|18.40|> ... This is not cool<|30.00|>
 
-    0,35.64s,36.80s,現在最流行的是直接
-    0,36.80s,37.86s,什麼事情沒做好
-    0,37.86s,38.20s,直接打
-    0,38.20s,39.04s,你媽確診
-    0,41.10s,42.64s,反正每個都自己噴你
-    0,42.64s,43.20s,你媽確診
+    0,35.64s,36.80s, This is not cool
 """
 
 def frame_diff_to_timestamp(frame_diff, sample_rate=SAMPLE_RATE):
