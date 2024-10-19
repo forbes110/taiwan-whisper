@@ -15,4 +15,4 @@ for example: a `sample.tsv` file with content:
 2. Run `python3 filter_data.py` to make sure all sample rates are 16000 Hz & in ".flac" format.
 3. Run `bash inference.sh` to get psuedo label with time stamps.
 4. Run `bash prepare_dataset.sh` to get segments with 30 secs for all data. 
-5. Run `bash generate_metadata.py`
+5. Run `gen_metadata.sh` to generate a metadata.tsv of all audio pathes, note that the "valid-percent" need to be set to 0.

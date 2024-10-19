@@ -16,11 +16,6 @@ SAMPLE_RATE = 16000
 SEGMENT_LENGTH = 30 * SAMPLE_RATE  # (secs * sample_rate = frames)
 ADD_CONTINUED_TOKEN_THRESHOLD = 1.0  # (secs)
 
-"""
-# TODO: 
-1. 第一個不能是 0.26，不是 inference 那步的問題，是這邊第一個紀錄要是 0
-2. 語音還切不對，檢查
-"""
 
 def frame_diff_to_timestamp(frame_diff, sample_rate=SAMPLE_RATE):
     residual = frame_diff % 320
@@ -43,7 +38,7 @@ def read_pseudo_labels(csv_fpath):
     """
     pseudo_label takes the form
     start, end, text
-    0.252, 18.391, Hello
+    0.25, 18.91, Hello
     """
     segments = []
     with open(csv_fpath, "r", encoding="utf-8") as f:
@@ -99,47 +94,43 @@ def segment_audio_by_trans(audio_trans_pair, segment_output_dir):
         for i, segment in enumerate(segments):
             
             start, end, text = segment
-            start_time_in_seconds, end_time_in_seconds = int(start), int(end)
                         
-            s_frame = int(start_time_in_seconds * SAMPLE_RATE)
-            e_frame = int(end_time_in_seconds * SAMPLE_RATE)
+            s_frame = int(start * SAMPLE_RATE)
+            e_frame = int(end * SAMPLE_RATE)
 
-            s_timestamp = frame_diff_to_timestamp(s_frame - prev_end_frame)
-            e_timestamp = frame_diff_to_timestamp(e_frame - prev_end_frame)
+            s_timetag = frame_diff_to_timestamp(s_frame - prev_end_frame)
+            e_timetag = frame_diff_to_timestamp(e_frame - prev_end_frame)
 
             if e_frame - prev_end_frame > SEGMENT_LENGTH:
                 cur_end_frame = prev_end_frame + SEGMENT_LENGTH
                 
-                segmented_audio = audio_data[prev_end_frame:cur_end_frame]
+                segmented_audio = audio_data[prev_end_frame:s_frame]
                 
                 if cur_end_frame - s_frame > ADD_CONTINUED_TOKEN_THRESHOLD * SAMPLE_RATE:
-                    cur_text += s_timestamp
+                    cur_text += s_timetag
                     cur_text += "<|continued|>"
                 
                 cur_text += "<|endoftext|>"
                 
-                segment_output_fpath = osp.join(audio_output_dir, f"{file_name}_{prev_end_frame}-{cur_end_frame}.flac")
+                segment_output_fpath = osp.join(audio_output_dir, f"{file_name}_{prev_end_frame}-{s_frame}.flac")
                 sf.write(segment_output_fpath, segmented_audio, SAMPLE_RATE)
 
-                with open(osp.join(audio_output_dir, f"{file_name}_{prev_end_frame}-{cur_end_frame}.txt"), 'w') as f:
+                with open(osp.join(audio_output_dir, f"{file_name}_{prev_end_frame}-{s_frame}.txt"), 'w') as f:
                     
                     # current segment
                     f.write(cur_text + "\n")
                     
-                    # next segment
-                    f.write(s_timestamp + text + e_timestamp + "\n")
-                    
-                    # previous segment
+                    # previous segment as promt to the model
                     f.write(prev_text + "\n")
 
                 prev_end_frame = s_frame
                 prev_text = cur_text
                 
-                s_timestamp = frame_diff_to_timestamp(s_frame - prev_end_frame)
-                e_timestamp = frame_diff_to_timestamp(e_frame - prev_end_frame)
-                cur_text = s_timestamp + text + e_timestamp                
+                s_timetag = frame_diff_to_timestamp(s_frame - prev_end_frame)
+                e_timetag  = frame_diff_to_timestamp(e_frame - prev_end_frame)
+                cur_text = s_timetag + text + e_timetag                
             else:
-                cur_text += s_timestamp + text + e_timestamp
+                cur_text += s_timetag + text + e_timetag
 
         return "Success"
     except Exception as e:

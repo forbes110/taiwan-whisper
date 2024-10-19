@@ -28,7 +28,7 @@ def get_parser():
         help="percentage of data to use as validation set (between 0 and 1)",
     )
     parser.add_argument(
-        "--output-fname", default="train", type=str, metavar="NAME", help="output fname"
+        "--output_fname", default="train", type=str, metavar="NAME", help="output fname"
     )
     parser.add_argument(
         "--dest", default=".", type=str, metavar="DIR", help="output directory"

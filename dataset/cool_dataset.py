@@ -215,41 +215,14 @@ def main(args):
     accelerator.wait_for_everyone()
     with open(f"./inference_results/whisper_base/idx_hyp.{rank}.txt", "w") as fw:
         for i, batch in enumerate(dataloader_for_test):
-            # logger.info(i, batch['idx'], batch['path'], batch['array'].shape)
-            # print(i, batch['idx'], batch['path'], batch['array'].shape)
-            # print(i, batch.keys(), batch['input_features'].shape, batch['idx'])
+
             idxs, preds_str = hallucination_dectector.generate(batch)
-            # assert len(idxs) == len(preds), f"Length of idxs and pred_str should be the same, current idxs: {len(idxs)}, pred_str: {len(preds)}"
             assert len(idxs) == len(preds_str), f"Length of idxs and pred_str should be the same, current idxs: {len(idxs)}, pred_str: {len(preds_str)}"
             steps_inference_progress_bar.update(1)
-            # sleep(1.0 * np.random.random()+ 1.0)
-            # gather all results
+
             for idx, pred_str in zip(idxs, preds_str):
                 fw.write(f"{idx}\t{pred_str}\n\n")
                 fw.flush()
-            # if i % 100 == 0:
-            #     accelerator.wait_for_everyone()
-            # if i > 10:
-            #     break
-    # sort
-    # overall_idxs = np.concatenate(overall_idxs)
-    # overall_preds = np.concatenate(overall_preds)
-    # if accelerator.is_main_process:
-    #     for idx, pred in zip(overall_idxs, overall_preds):
-    #         audio_fpath = dataset.audio_fpaths[idx]
-    #         # print("-------------------------------------")
-    #         print(f"idx: {idx}")
-            # print(f"Audio fpath: {audio_fpath}")
-            # print(f"Pred: {pred_str}")
-
-    
-    # ds = ds.shuffle(seed=42, buffer_size=1)
-    # dl = DataLoader(ds, batch_size=2, num_workers=4)
-    # for i, batch in enumerate(dl):
-    #     print(i, batch)
-    #     if i == 10:
-    #         break
-    # test dataloader
     
 
 if __name__ == "__main__":

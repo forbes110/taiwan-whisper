@@ -168,30 +168,38 @@ def whisper_checker(
     invalid_line_indices = []
     with open(hyps_tsv, "r") as f:
         for i, l in enumerate(f.readlines()):
+            
             items = l.strip().split('\t')
+            
             if len(items) != 2:
                 print(f"Invalid line@{i}: {l}")
                 invalid_line_indices.append(i)
                 continue
+            
             idx, hyp = items
             idx_to_src_and_hyp[int(idx)] = {
                 'hyp': hyp,
             }
     
     print(f"Invalid line counts: {len(invalid_line_indices)}, total lines: {i}, indices: {invalid_line_indices}")
+    
     # check the length alignment between the original trans_fpaths and the hyps
     if not len(trans_fpaths) == len(idx_to_src_and_hyp):
         print(f"Length mismatch, trans_fpaths: {len(trans_fpaths)}, hyps: {len(idx_to_src_and_hyp)}")
+        
     # matching idx to src
     for valid_idx in idx_to_src_and_hyp.keys():
         idx_to_src_and_hyp[valid_idx]['src'] = trans_fpaths[valid_idx]
+        
     idx_and_src_and_hyps = [(k, v['src'], v['hyp']) for k, v in idx_to_src_and_hyp.items()]
     metric = MixErrorRate(phonemize=phonemize)
     normalizer = BasicTextNormalizer()
+    
     # check hallucination
     _check_single = partial(check_single_trans, metric=metric, threshold=threshold, normalizer=normalizer, mix_detection=mix_detection, empty_error_rate=empty_error_rate)
     if mix_detection:
         print("Mixing detection method...")
+        
     def check_chunk(q, chunk, process_idx, progress_bar_mod=1):
         chunk_results = []
         progress_bar = (
@@ -205,16 +213,15 @@ def whisper_checker(
             if progress_bar is not None:
                 progress_bar.update(1)
         q.put(chunk_results)
-    # # check hallucination using multiprocessing
-    # with mp.Pool() as pool:
-    #     # show progress bar and check hallucination
-    #     hallucinated_indices = list(tqdm(pool.map(single_checker, idx_and_src_and_hyps), total=len(idx_and_src_and_hyps), desc="Checking hallucination..."))
+        
     hallucinated_indices = []
+    
     def _spread_through_processes(n_processes, idx_and_src_and_hyps):
         n = len(idx_and_src_and_hyps)
         n_per_process = n // n_processes
         for i in range(0, n, n_per_process):
             yield idx_and_src_and_hyps[i:i+n_per_process]
+            
     # overall_progress = tqdm(total=len(idx_and_src_and_hyps), desc="Checking hallucination...", position=0)
     queues, processes = [], []
     for proc_i, idx_and_src_and_hyps_chunk in enumerate(_spread_through_processes(num_workers, idx_and_src_and_hyps)):
