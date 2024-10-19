@@ -171,6 +171,7 @@ def test_load_cool_dataset(manifest, root):
             break
 
 def main(args):
+    
     print(args)
     # test load_cool_dataset
     # test_load_cool_dataset(args.manifest, args.root)
@@ -179,9 +180,11 @@ def main(args):
     accelerator = Accelerator(
 
     )
+    
     dataset = PreFilterCoolASRDataset(args.manifest)
     if accelerator.is_main_process:
         print(f"Total samples: {len(dataset)}")
+        
     # distributed_sampler = DistributedSampler(dataset, num_replicas=accelerator.num_processes, rank=accelerator.process_index)
     hallucination_dectector = WhisperSmallModelDetector(small_model_card='openai/whisper-base', accelerator=accelerator)
     dataloader_for_test = DataLoader(dataset, 
@@ -192,19 +195,23 @@ def main(args):
         pin_memory=True,
         drop_last=False,
     )
+    
     print(f"Prepare dataloader for testing ...")
     dataloader_for_test = accelerator.prepare(dataloader_for_test)
     print(f"Prepare dataloader for testing ... Done")
+    
     if accelerator.is_main_process:
         print(f"Dataloader size: {len(dataloader_for_test)}")
     steps_inference_progress_bar = tqdm(
         range(len(dataloader_for_test)), desc="Inference segments ... ", position=0, disable=not accelerator.is_local_main_process
     )
+    
     # get rank by os
     rank = int(os.environ['RANK'])
     print(f"Rank: {rank}")
     # overall_idxs = []
     # overall_preds = []
+    
     accelerator.wait_for_everyone()
     with open(f"./inference_results/whisper_base/idx_hyp.{rank}.txt", "w") as fw:
         for i, batch in enumerate(dataloader_for_test):

@@ -142,7 +142,18 @@ def check_single_trans(input, skip_special_tokens=True, metric=None, threshold=0
         return idx, True
     return idx, False
 
-def whisper_checker(original_tsv, hyps_tsv, output_dir, threshold=0.6, num_workers=32, phonemize=False, mix_detection=False, empty_error_rate=1.0, additional_fname="", overwrite_root=""):
+def whisper_checker(
+    original_tsv, 
+    hyps_tsv, 
+    output_dir, 
+    threshold=0.6, 
+    num_workers=32, 
+    phonemize=False, 
+    mix_detection=False, 
+    empty_error_rate=1.0, 
+    additional_fname="", 
+    overwrite_root=""):
+    
     # load original tsv
     with open(original_tsv, "r") as f:
         root = f.readline().strip()
@@ -151,7 +162,8 @@ def whisper_checker(original_tsv, hyps_tsv, output_dir, threshold=0.6, num_worke
         audio_subfpaths = [l.strip() for l in f.readlines()]
         audio_fpaths = [osp.join(root, audio_subfpath) for audio_subfpath in audio_subfpaths]
         trans_fpaths = [audio_fpath.replace('flac', 'txt') for audio_fpath in audio_fpaths]
-    # load hyps from small model
+        
+    # load preds from validator model
     idx_to_src_and_hyp = defaultdict(lambda: None)
     invalid_line_indices = []
     with open(hyps_tsv, "r") as f:
@@ -165,6 +177,7 @@ def whisper_checker(original_tsv, hyps_tsv, output_dir, threshold=0.6, num_worke
             idx_to_src_and_hyp[int(idx)] = {
                 'hyp': hyp,
             }
+    
     print(f"Invalid line counts: {len(invalid_line_indices)}, total lines: {i}, indices: {invalid_line_indices}")
     # check the length alignment between the original trans_fpaths and the hyps
     if not len(trans_fpaths) == len(idx_to_src_and_hyp):
@@ -227,7 +240,9 @@ def whisper_checker(original_tsv, hyps_tsv, output_dir, threshold=0.6, num_worke
     hallucinated_only = [x[1] for x in hallucinated_indices]
     print(f"Total hallucinated segments: {sum(hallucinated_only)}")
     print(f"Hallucination ratio: {sum(hallucinated_only) / len(hallucinated_indices)}")
+    
     # save the new tsv filtered by the hallucinated indices
+    
     if output_dir is None:
         # do not save the hallucinated tsv, just return
         print("No output directory specified, not saving the hallucinated tsv...")
@@ -241,6 +256,7 @@ def whisper_checker(original_tsv, hyps_tsv, output_dir, threshold=0.6, num_worke
         output_base_fname += "-mix_detection"
     if additional_fname:
         output_base_fname += f"-{additional_fname}"
+        
     output_fname = f"{output_base_fname}.tsv"
     with open(osp.join(output_dir, output_fname), "w") as fw:
         print(root, file=fw)
@@ -262,58 +278,6 @@ def main(args):
             additional_fname=args.additional_fname,
             overwrite_root=args.overwrite_root
         )
-    # print(f"Transcript directory: {args.trans_dir}")
-    # trans_fpaths = glob.glob(osp.join(args.trans_dir, "*.vtt"))
-    # trans_fpaths = sorted(filter(lambda x: "en" not in x, trans_fpaths))
-    # print(f"Total fpaths: {len(trans_fpaths)}, e.g.: {trans_fpaths[:5]}")
-    # trans_fpaths_search_spaces = trans_fpaths[:5000]
-    # hallucinated_candidates = []
-    # total_segments = 0
-    # for trans_fpath in tqdm(trans_fpaths_search_spaces, total=len(trans_fpaths_search_spaces)):
-    #     # print(f"Checking {trans_fpath}...")
-    #     segments = read_vtt(trans_fpath)
-    #     # using mp
-    #     # with mp.Pool() as pool:
-    #     #     for i, is_hallucinated in enumerate(pool.imap(check_hallucination, segments)):
-    #     #         if is_hallucinated:
-    #     #             s, e, t = segments[i]
-    #     #             hallucinated_candidates.append((osp.basename(trans_fpath), s, e, t))
-    #     for s, e, t in segments:
-    #         is_hallucinated = check_hallucination(t)
-    #         if is_hallucinated:
-    #             hallucinated_candidates.append((osp.basename(trans_fpath), s, e, t))
-    #     total_segments += len(segments)
-    # for n, s, e, t in hallucinated_candidates:
-    #     print(f"Name: {n}, Start: {s}, End: {e}, Text: {t}")
-    #     print("")
-    # print(f"Total segments: {total_segments}")
-    # print(f"Total hallucinated segments: {len(hallucinated_candidates)}")
-    # # ratio
-    # print(f"Hallucination ratio: {len(hallucinated_candidates) / total_segments}")
-
-    # get the hallucinated segments
-    # audio_dir = args.trans_dir.replace('trans', 'raw')
-    # output_dir = args.trans_dir.replace('trans', 'hallucinated')
-    # os.makedirs(output_dir, exist_ok=True)
-    # for n, s, e, t in tqdm(hallucinated_candidates, total=len(hallucinated_candidates), desc="Extracting hallucinated segments"):
-    #     audio_fpath = osp.join(audio_dir, n.replace('.vtt', '.flac'))
-    #     if not osp.exists(audio_fpath):
-    #         print(f"Audio file not found: {audio_fpath}")
-    #         continue
-    #     data, sr = sf.read(audio_fpath)
-    #     start_frame = int(timecode_to_seconds(s) * sr)
-    #     end_frame = int(timecode_to_seconds(e) * sr)
-    #     assert end_frame > start_frame, f"End frame {end_frame} <= Start frame {start_frame} @ {audio_fpath}"
-    #     audio_segment = data[start_frame:end_frame]
-    #     base_name = osp.basename(n).split('.')[0]
-    #     output_fname = f"{base_name}_{start_frame}-{end_frame}.flac"
-    #     output_subdir = osp.join(output_dir, base_name)
-    #     if not osp.exists(output_subdir):
-    #         os.makedirs(output_subdir, exist_ok=True)
-    #     output_fpath = osp.join(output_subdir, output_fname)
-    #     sf.write(output_fpath, audio_segment, sr)
-    #     with open(output_fpath.replace('.flac', '.txt'), "w") as f:
-    #         f.write(t)
 
 
 if __name__ == "__main__":

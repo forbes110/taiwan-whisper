@@ -70,4 +70,3 @@ if __name__ == "__main__":
     # Example usage: Change 'directory' to your target path
     directory = "/mnt/dataset_1T/"
     process_directory(directory, max_workers=8)  # Adjust number of threads if needed
- d

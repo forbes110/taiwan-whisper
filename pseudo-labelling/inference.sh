@@ -14,4 +14,6 @@ python3 inference.py \
     --log_progress True \
     --model_size_or_path tiny \
     --compute_type default \
-    --num_workers 8
+    --chunk_length 5 \
+    --num_workers 8 \
+    --batch_size 8

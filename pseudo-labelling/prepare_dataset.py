@@ -18,35 +18,26 @@ ADD_CONTINUED_TOKEN_THRESHOLD = 1.0  # (secs)
 
 """
 # TODO: 
-1. how to handle overlapping?
-2. why there are txt after 30s in 30?, 
-    e.g., 
-    <|18.40|> ... This is not cool<|30.00|>
-
-    0,35.64s,36.80s, This is not cool
+1. 第一個不能是 0.26，不是 inference 那步的問題，是這邊第一個紀錄要是 0
+2. 語音還切不對，檢查
 """
 
 def frame_diff_to_timestamp(frame_diff, sample_rate=SAMPLE_RATE):
     residual = frame_diff % 320
+    
     if 320 - residual > 5 and residual > 5:
-        print(f"Warning: frame_diff {frame_diff} is not very close to a multiple of 320")
+        # print(f"Warning: frame_diff {frame_diff} is not very close to a multiple of 320")
         # round frame_diff to the nearest 320 frames
         frame_diff = round(frame_diff / 320) * 320
-    sec_diff = frame_diff / sample_rate # if frame_diff is a multiple of 320, then sec_diff is with resolution of 0.02s
+        
+    # if frame_diff is a multiple of 320, then sec_diff is with resolution of 0.02s
+    sec_diff = frame_diff / sample_rate 
+    
     # use max min function to ensure sec_diff is within [0.00, 30.00]
     sec_diff = max(0.00, min(30.00, sec_diff))
+    
     # return token format <|sec_diff:.2f|>
     return f"<|{sec_diff:.2f}|>"
-
-def timecode_to_seconds(timecode):
-    timecode = timecode.strip()
-    timecode_items = timecode.split(":")
-    seconds = float(timecode_items[-1])
-    if len(timecode_items) >= 2:
-        seconds += int(timecode_items[-2]) * 60
-    if len(timecode_items) >= 3:
-        seconds += int(timecode_items[-3]) * 3600
-    return seconds
 
 def read_pseudo_labels(csv_fpath):
     """
@@ -62,7 +53,7 @@ def read_pseudo_labels(csv_fpath):
             if len(row) != 3:
                 continue
             start, end, text = row
-            segments.append((start.strip(), end.strip(), text.strip()))
+            segments.append((float(start), float(end), text.strip()))
     return segments
 
 # Segment audio based on transcriptions
@@ -83,21 +74,33 @@ def segment_audio_by_trans(audio_trans_pair, segment_output_dir):
         print(f"Segmenting {audio_fpath} based on {trans_fpath}")   
         
         file_name = osp.basename(audio_fpath).split('.')[0]
-        
         audio_output_dir = osp.join(segment_output_dir, file_name)
         
         os.makedirs(audio_output_dir, exist_ok=True)
         
         audio_data, sr = sf.read(audio_fpath)
+        
+        """
+        segments takes the format
+        start,end,text
+        0.252,18.391, This is good
+        18.391,41.425, Not bad
+        41.425,60.967, Oh my god
+        60.967,80.862, Nice
+        """
+        
         segments = read_pseudo_labels(trans_fpath)
-        prev_end_frame = 0
+        
+        prev_end_frame = int(segments[0][0] * SAMPLE_RATE)
         prev_text = ""
         cur_text = ""
 
+        # for each line of a audio transcrion
         for i, segment in enumerate(segments):
+            
             start, end, text = segment
-            start_time_in_seconds = timecode_to_seconds(start)
-            end_time_in_seconds = timecode_to_seconds(end)
+            start_time_in_seconds, end_time_in_seconds = int(start), int(end)
+                        
             s_frame = int(start_time_in_seconds * SAMPLE_RATE)
             e_frame = int(end_time_in_seconds * SAMPLE_RATE)
 
@@ -106,23 +109,35 @@ def segment_audio_by_trans(audio_trans_pair, segment_output_dir):
 
             if e_frame - prev_end_frame > SEGMENT_LENGTH:
                 cur_end_frame = prev_end_frame + SEGMENT_LENGTH
+                
                 segmented_audio = audio_data[prev_end_frame:cur_end_frame]
                 
-                # if cur_end_frame - s_frame > ADD_CONTINUED_TOKEN_THRESHOLD * SAMPLE_RATE:
-                #     cur_text += s_timestamp + "<|continued|>"
+                if cur_end_frame - s_frame > ADD_CONTINUED_TOKEN_THRESHOLD * SAMPLE_RATE:
+                    cur_text += s_timestamp
+                    cur_text += "<|continued|>"
+                
                 cur_text += "<|endoftext|>"
                 
                 segment_output_fpath = osp.join(audio_output_dir, f"{file_name}_{prev_end_frame}-{cur_end_frame}.flac")
                 sf.write(segment_output_fpath, segmented_audio, SAMPLE_RATE)
 
                 with open(osp.join(audio_output_dir, f"{file_name}_{prev_end_frame}-{cur_end_frame}.txt"), 'w') as f:
+                    
+                    # current segment
                     f.write(cur_text + "\n")
+                    
+                    # next segment
                     f.write(s_timestamp + text + e_timestamp + "\n")
+                    
+                    # previous segment
                     f.write(prev_text + "\n")
 
                 prev_end_frame = s_frame
                 prev_text = cur_text
-                cur_text = s_timestamp + text + e_timestamp
+                
+                s_timestamp = frame_diff_to_timestamp(s_frame - prev_end_frame)
+                e_timestamp = frame_diff_to_timestamp(e_frame - prev_end_frame)
+                cur_text = s_timestamp + text + e_timestamp                
             else:
                 cur_text += s_timestamp + text + e_timestamp
 
@@ -159,14 +174,18 @@ def segment_audio(audio_dir, trans_dir, segment_output_dir):
         audio_trans_pairs.append((audio_fpath, trans_fpath))
 
     # Process audio files in parallel using multiprocessing
-    chunk_size = 100 if len(audio_trans_pairs) > 100 else len(audio_trans_pairs)
-    
+    chunk_size = 100
     
     segment_func = partial(segment_audio_by_trans, segment_output_dir=segment_output_dir)
     
     for i in range(0, len(audio_trans_pairs), chunk_size):
-        chunk = audio_trans_pairs[i:i + chunk_size]
-        print(f"Processing chunk {i}-{i + len(chunk)} with {args.nprocs} processes...")
+        # print(f"audio_trans_pairs: {audio_trans_pairs}")
+        
+        end_i = min(i + chunk_size, len(audio_trans_pairs))
+        # chunk of audio piars to accelerate by parallel processing
+        chunk = audio_trans_pairs[i:end_i]
+        
+        print(f"Processing chunk {i}-{i + end_i} with {args.nprocs} processes...")
 
         with mp.Pool(processes=args.nprocs) as pool:
             for result in tqdm(pool.imap_unordered(segment_func, chunk), total=len(chunk), desc="Segmenting audio..."):

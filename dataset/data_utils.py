@@ -51,11 +51,16 @@ def frame_diff_to_timestamp(frame_diff, sample_rate=SAMPLE_RATE):
     residual = frame_diff % 320
     if 320 - residual > 5 and residual > 5:
         print(f"Warning: frame_diff {frame_diff} is not very close to a multiple of 320")
+        
         # round frame_diff to the nearest 320 frames
         frame_diff = round(frame_diff / 320) * 320
-    sec_diff = frame_diff / sample_rate # if frame_diff is a multiple of 320, then sec_diff is with resolution of 0.02s
+        
+    # if frame_diff is a multiple of 320, then sec_diff is with resolution of 0.02s
+    sec_diff = frame_diff / sample_rate 
+    
     # use max min function to ensure sec_diff is within [0.00, 30.00]
     sec_diff = max(0.00, min(30.00, sec_diff))
+    
     # return token format <|sec_diff:.2f|>
     return f"<|{sec_diff:.2f}|>"
 

@@ -14,6 +14,8 @@ def parse_args():
     parser.add_argument("--log_progress", default=True, help="Display progress bars during transcription.")
     parser.add_argument("--model_size_or_path", type=str, default="tiny", help="Size or path of the Whisper model.")
     parser.add_argument("--compute_type", type=str, default="default", help="Compute type for CTranslate2 model.")
+    parser.add_argument('--chunk_length', type=int, default=5, help='The length of audio segments. If it is not None, it will overwrite the default chunk_length of the FeatureExtractor.')
+    parser.add_argument('--batch_size', type=int, default=64, help='The maximum number of parallel requests to model for decoding.')
     parser.add_argument("--num_workers", type=int, default=8, help="Number of workers for parallel processing.")
     return parser.parse_args()
 
@@ -22,16 +24,16 @@ def load_dataset(dataset_path):
     df = pd.read_csv(dataset_path)
     return df["audio_path"].tolist()
 
-def transcribe_audio_file(pipeline, audio_path, language="zh", log_progress=False):
+def transcribe_audio_file(pipeline, audio_path, language="zh", log_progress=False, batch_size=64):
     """Transcribe a single audio file and return the results."""
     segments, _ = pipeline.transcribe(
-        audio_path,
-        language=language,
+        audio=audio_path,
         task="transcribe",  # Set task to transcribe (no translation)
-        log_progress=log_progress
+        log_progress=log_progress,
+        batch_size=batch_size,
     )
     results = [
-        {"start": segment.start, "end": segment.end, "text": segment.text}
+        {"start": f"{segment.start:.2f}", "end": f"{segment.end:.2f}", "text": segment.text}
         for segment in segments
     ]
     return results
@@ -58,7 +60,14 @@ def main():
         compute_type=args.compute_type,
         num_workers=args.num_workers  # Set number of workers for parallel processing
     )
-    pipeline = BatchedInferencePipeline(model)
+    
+    pipeline = BatchedInferencePipeline(
+        model, 
+        use_vad_model=True,  # Enable VAD model
+        chunk_length=args.chunk_length,   
+        language=args.language,
+        vad_device="cuda" if torch.cuda.is_available() else "cpu",
+    )
 
     # Ensure the output directory exists
     os.makedirs(args.output_dir, exist_ok=True)
@@ -71,15 +80,17 @@ def main():
 
         # Extract the file name without path and extension
         file_name = os.path.splitext(os.path.basename(audio_path))[0]
-        output_csv = os.path.join(args.output_dir, f"{file_name}_transcription.csv")
+        output_csv = os.path.join(args.output_dir, f"{file_name}.csv")
 
         # Transcribe the audio file
         try:
             results = transcribe_audio_file(
                 pipeline,
-                audio_path,
+                audio_path=audio_path,
                 language=args.language,
-                log_progress=args.log_progress
+                log_progress=args.log_progress,
+                batch_size=args.batch_size,
+                
             )
             # Save the transcription results as a separate CSV file
             save_transcription_to_csv(results, output_csv)
