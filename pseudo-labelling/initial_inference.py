@@ -34,7 +34,6 @@ def transcribe_audio_file(pipeline, audio_path, language="zh", log_progress=Fals
         task="transcribe",  # Set task to transcribe (no translation)
         log_progress=log_progress,
         batch_size=batch_size,
-        condition_on_previous_text=True,
     )
     results = [
         {"start": f"{segment.start:.2f}", "end": f"{segment.end:.2f}", "text": segment.text}
