@@ -17,6 +17,7 @@ def parse_args():
     parser.add_argument('--chunk_length', type=int, default=5, help='The length of audio segments. If it is not None, it will overwrite the default chunk_length of the FeatureExtractor.')
     parser.add_argument('--batch_size', type=int, default=64, help='The maximum number of parallel requests to model for decoding.')
     parser.add_argument("--num_workers", type=int, default=8, help="Number of workers for parallel processing.")
+    
     return parser.parse_args()
 
 def load_dataset(dataset_path):
@@ -26,11 +27,14 @@ def load_dataset(dataset_path):
 
 def transcribe_audio_file(pipeline, audio_path, language="zh", log_progress=False, batch_size=64):
     """Transcribe a single audio file and return the results."""
+    
+    # TODO: check param: multilingual, output_language, condition_on_previous_text
     segments, _ = pipeline.transcribe(
         audio=audio_path,
         task="transcribe",  # Set task to transcribe (no translation)
         log_progress=log_progress,
         batch_size=batch_size,
+        condition_on_previous_text=True,
     )
     results = [
         {"start": f"{segment.start:.2f}", "end": f"{segment.end:.2f}", "text": segment.text}
@@ -60,6 +64,8 @@ def main():
         compute_type=args.compute_type,
         num_workers=args.num_workers  # Set number of workers for parallel processing
     )
+    
+    # TODO: now we use batched version, maybe use sequence version later
     
     pipeline = BatchedInferencePipeline(
         model, 

@@ -18,8 +18,8 @@ from transformers import (
 )
 from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 from collections import defaultdict
-from utils.transcript_readers import read_vtt, timecode_to_seconds
-from utils.evaluation import MixErrorRate
+from transcript_readers import read_vtt, timecode_to_seconds
+from evaluation import MixErrorRate
 from functools import partial
 
 class WhisperSmallModelDetector(object):
@@ -154,7 +154,7 @@ def whisper_checker(
     additional_fname="", 
     overwrite_root=""):
     
-    # load original tsv
+    # load original tsv for audio paths
     with open(original_tsv, "r") as f:
         root = f.readline().strip()
         if overwrite_root:
@@ -239,10 +239,6 @@ def whisper_checker(
     for p in processes:
         p.join()
 
-
-    # for i, (idx, src, hyp) in enumerate(tqdm(idx_and_src_and_hyps, total=len(idx_and_src_and_hyps), desc="Checking hallucination...")):
-    #     idx_and_hallucinated = check_single((idx, src, hyp))
-    #     hallucinated_indices.append(idx_and_hallucinated)
     # show the statistics
     hallucinated_only = [x[1] for x in hallucinated_indices]
     print(f"Total hallucinated segments: {sum(hallucinated_only)}")
@@ -254,24 +250,27 @@ def whisper_checker(
         # do not save the hallucinated tsv, just return
         print("No output directory specified, not saving the hallucinated tsv...")
         return
+    
     if not osp.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
+        
     output_base_fname = f"train_non-hallucinated-whisper-base-threshold{threshold}"
+    
     if phonemize:
         output_base_fname += "-phonemized"
     if mix_detection:
         output_base_fname += "-mix_detection"
     if additional_fname:
         output_base_fname += f"-{additional_fname}"
-        
+    
+    # output cleaned dataset    
     output_fname = f"{output_base_fname}.tsv"
+    
     with open(osp.join(output_dir, output_fname), "w") as fw:
         print(root, file=fw)
         for i, (idx, hallucinated) in enumerate(tqdm(hallucinated_indices, total=len(hallucinated_indices), desc="Writing hallucinated tsv...")):
             if not hallucinated:
                 print(audio_subfpaths[idx], file=fw)
-        
-
 
 def main(args):
     print(args)
