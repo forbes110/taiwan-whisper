@@ -9,4 +9,4 @@ python3 initial_inference.py \
     --compute_type default \
     --chunk_length 5 \
     --num_workers 8 \
-    --batch_size 8
+    --batch_size 16

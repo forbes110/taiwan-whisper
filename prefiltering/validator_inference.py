@@ -10,12 +10,82 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 from datasets import IterableDataset, Features
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
-from elim_hallucination import WhisperSmallModelDetector
+import torch
 import soundfile as sf
 import re
+from transformers import (
+    AddedToken,
+    WhisperForConditionalGeneration, 
+    WhisperConfig,
+    WhisperForConditionalGeneration,
+    WhisperProcessor,
+    WhisperTokenizerFast,
+)
 
 sampling_rate = 16000
 logger = get_logger(__name__)
+
+class WhisperSmallModelDetector(object):
+    def __init__(self, small_model_card='openai/whisper-base', accelerator=None):
+        self.model = WhisperForConditionalGeneration.from_pretrained(small_model_card, low_cpu_mem_usage=True)
+        self.processor = WhisperProcessor.from_pretrained(small_model_card)
+        self.tokenizer = WhisperTokenizerFast.from_pretrained(small_model_card, use_fast=True)
+        self.accelerator = accelerator
+        
+        # override timestamp tokens until tokenizer issues are fixed in transformers --> what issue? 
+        timestamps = [AddedToken("<|%.2f|>" % (i * 0.02), lstrip=False, rstrip=False) for i in range(1500 + 1)]
+        
+        # with logging.disable(logging.WARNING):
+        self.tokenizer.add_tokens(timestamps)
+        self.tokenizer.set_prefix_tokens(language='zh', task='transcribe', predict_timestamps=True)
+        self.gen_kwargs = {
+            "max_length": 448,
+            "num_beams": 1,
+            "return_timestamps": True,
+            "language": 'zh',
+            "task": 'transcribe',
+        }
+        # other kwargs
+        self.input_padding = "longest"
+        # prepare model
+        self.model.eval()
+        if self.accelerator is not None:
+            self.model = self.model.to(self.accelerator.device)
+    
+    def collate_fn(self, features):
+        # batch keys: 'idx', 'path', 'array'
+        inputs = self.processor.feature_extractor(
+            [feature['array'] for feature in features],
+            sampling_rate=16000,
+        )
+        # print(inputs.input_features.shape)
+        input_features = {
+            'input_features': inputs.input_features
+        }
+        batch = self.processor.feature_extractor.pad(
+            input_features,
+            padding=self.input_padding,
+            return_tensors="pt",
+        )
+        batch['idx'] = torch.from_numpy(np.array([feature['idx'] for feature in features])).long().to(batch['input_features'].device)
+        # batch['additional'] = "hello"
+        # print(batch)
+        # assert False
+        return batch # dict of tensors
+
+    def generate(self, batch):
+        with torch.no_grad():
+            output_ids = self.model.generate(batch["input_features"], **self.gen_kwargs)
+            # output_ids = self.accelerator.pad_across_processes(output_ids, dim=1, pad_index=self.tokenizer.pad_token_id)
+            # pad to longest generated sequence
+            # output_ids = torch.nn.functional.pad(output_ids, (0, 448 - output_ids.shape[1]), value=self.tokenizer.pad_token_id)
+        # print(output_ids.shape)
+        preds = output_ids
+        preds_str = self.tokenizer.batch_decode(preds, skip_special_tokens=True, decode_with_timestamps=False)
+        
+        # return [(idx.item(), pred_s) for idx, pred_s in zip(batch['idx'], pred_str)]
+        return batch['idx'].cpu().numpy(), preds_str
+            
 
 def load_audio_fpaths(manifest_fpath, root=None):
     audio_fpaths = []
@@ -73,7 +143,7 @@ class PreFilterASRDataset(Dataset):
         return len(self.audio_fpaths)
 
 def main(args):
-    print(args)
+    print(args) 
 
     accelerator = None
     accelerator = Accelerator(
@@ -116,9 +186,10 @@ def main(args):
             
             # gather all results
             for idx, pred_str in zip(idxs, preds_str):
-                fw.write(f"{idx}\t{pred_str}\n\n")
+                fw.write(f"{idx}\t{pred_str}\n")
                 fw.flush()
                 
+    print("Everthing is done!")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

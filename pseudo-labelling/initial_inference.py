@@ -28,7 +28,6 @@ def load_dataset(dataset_path):
 def transcribe_audio_file(pipeline, audio_path, language="zh", log_progress=False, batch_size=64):
     """Transcribe a single audio file and return the results."""
     
-    # TODO: check param: multilingual, output_language, condition_on_previous_text
     segments, _ = pipeline.transcribe(
         audio=audio_path,
         task="transcribe",  # Set task to transcribe (no translation)

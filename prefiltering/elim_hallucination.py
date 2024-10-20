@@ -8,79 +8,14 @@ import numpy as np
 import soundfile as sf
 import multiprocessing as mp
 from tqdm import tqdm
-from transformers import (
-    AddedToken,
-    WhisperForConditionalGeneration, 
-    WhisperConfig,
-    WhisperForConditionalGeneration,
-    WhisperProcessor,
-    WhisperTokenizerFast,
-)
 from transformers.models.whisper.english_normalizer import BasicTextNormalizer
 from collections import defaultdict
 from transcript_readers import read_vtt, timecode_to_seconds
 from evaluation import MixErrorRate
 from functools import partial
+import csv
+from contextlib import contextmanager
 
-class WhisperSmallModelDetector(object):
-    def __init__(self, small_model_card='openai/whisper-base', accelerator=None):
-        self.model = WhisperForConditionalGeneration.from_pretrained(small_model_card, low_cpu_mem_usage=True)
-        self.processor = WhisperProcessor.from_pretrained(small_model_card)
-        self.tokenizer = WhisperTokenizerFast.from_pretrained(small_model_card, use_fast=True)
-        self.accelerator = accelerator
-        # override timestamp tokens until tokenizer issues are fixed in transformers --> what issue? 
-        timestamps = [AddedToken("<|%.2f|>" % (i * 0.02), lstrip=False, rstrip=False) for i in range(1500 + 1)]
-        # with logging.disable(logging.WARNING):
-        self.tokenizer.add_tokens(timestamps)
-        self.tokenizer.set_prefix_tokens(language='zh', task='transcribe', predict_timestamps=True)
-        self.gen_kwargs = {
-            "max_length": 448,
-            "num_beams": 1,
-            "return_timestamps": True,
-            "language": 'zh',
-            "task": 'transcribe',
-        }
-        # other kwargs
-        self.input_padding = "longest"
-        # prepare model
-        self.model.eval()
-        if self.accelerator is not None:
-            self.model = self.model.to(self.accelerator.device)
-    
-    def collate_fn(self, features):
-        # batch keys: 'idx', 'path', 'array'
-        inputs = self.processor.feature_extractor(
-            [feature['array'] for feature in features],
-            sampling_rate=16000,
-        )
-        # print(inputs.input_features.shape)
-        input_features = {
-            'input_features': inputs.input_features
-        }
-        batch = self.processor.feature_extractor.pad(
-            input_features,
-            padding=self.input_padding,
-            return_tensors="pt",
-        )
-        batch['idx'] = torch.from_numpy(np.array([feature['idx'] for feature in features])).long().to(batch['input_features'].device)
-        # batch['additional'] = "hello"
-        # print(batch)
-        # assert False
-        return batch # dict of tensors
-
-    def generate(self, batch):
-        with torch.no_grad():
-            output_ids = self.model.generate(batch["input_features"], **self.gen_kwargs)
-            # output_ids = self.accelerator.pad_across_processes(output_ids, dim=1, pad_index=self.tokenizer.pad_token_id)
-            # pad to longest generated sequence
-            # output_ids = torch.nn.functional.pad(output_ids, (0, 448 - output_ids.shape[1]), value=self.tokenizer.pad_token_id)
-        # print(output_ids.shape)
-        preds = output_ids
-        preds_str = self.tokenizer.batch_decode(preds, skip_special_tokens=True, decode_with_timestamps=False)
-        
-        # return [(idx.item(), pred_s) for idx, pred_s in zip(batch['idx'], pred_str)]
-        return batch['idx'].cpu().numpy(), preds_str
-            
 
 def check_hallucination(segment, **kwargs):
     if type(segment) == str:
@@ -106,41 +41,54 @@ def check_hallucination(segment, **kwargs):
         if max_count > threshold:
             return True
         return False
-        # prob = counts / counts.sum()
-        # if prob.max() > threshold:
-        #     return True
-    
-    # return _length_checker(text, **kwargs)
+
     return _char_ngram_checker(text, **kwargs)
 
 def check_single_trans(input, skip_special_tokens=True, metric=None, threshold=0.5, normalizer=None, mix_detection=False, empty_error_rate=1.0):
     idx, trans_fpath, hyp = input
+    
     with open(trans_fpath, "r") as f:
         lines = f.readlines()
-        whisper_transcript = lines[0].strip().split("<|endoftext|>")[0] # remove <|endoftext|>
-        whisper_transcript = whisper_transcript.split("<|continued|>")[0] # remove <|continued|>
-        end_transcript = lines[2].strip()
+        
+        # remove <|endoftext|>
+        whisper_transcript = lines[0].strip().split("<|endoftext|>")[0]
+        
+        # remove <|continued|>
+        whisper_transcript = whisper_transcript.split("<|continued|>")[0] 
+        
+        # prev segment as prompt, but not used here
+        end_transcript = lines[1].strip()
+        
         # find all timestamp tokens ('<|*|>') and remove them in the transcript
         timestamp_tokens = re.findall(r"<\|\d{1,2}\.\d{2}\|>", whisper_transcript + end_transcript)
+        
         for st in timestamp_tokens:
             whisper_transcript = whisper_transcript.replace(st, ' ')
         whisper_transcript = whisper_transcript.strip().replace('  ', ' ')
+        
     if normalizer is not None:
         hyp = normalizer(hyp.strip())
         whisper_transcript = normalizer(whisper_transcript)
+        
     if mix_detection:
+                
         # check by ngram hallucination
         large_is_hallucinated = check_hallucination(whisper_transcript, n=6, threshold=5)
         if large_is_hallucinated:
             return idx, True
+        
+        # if large is not trivially hallucinated but the small one is, then the small one should not be used to perform examination
         small_is_hallucinated = check_hallucination(hyp, n=6, threshold=5)
-        if small_is_hallucinated: # if large is not trivially hallucinated but the small one is, then the small one should not be used to perform examination
+        if small_is_hallucinated: 
             return idx, False
-    # check hallucination by comparing the original transcript and the hyp transcript with MER
+        
+    # check hallucination by comparing the original transcript and the valiadtor inferenced hyp transcript with MER
     mer = metric.compute([whisper_transcript], [hyp], show_progress=False, empty_error_rate=empty_error_rate)
+    
     if mer > threshold:
-        return idx, True
-    return idx, False
+        return idx, True, (mer, whisper_transcript, hyp, trans_fpath, idx)
+    
+    return idx, False, None
 
 def whisper_checker(
     original_tsv, 
@@ -153,7 +101,7 @@ def whisper_checker(
     empty_error_rate=1.0, 
     additional_fname="", 
     overwrite_root=""):
-    
+        
     # load original tsv for audio paths
     with open(original_tsv, "r") as f:
         root = f.readline().strip()
@@ -163,7 +111,7 @@ def whisper_checker(
         audio_fpaths = [osp.join(root, audio_subfpath) for audio_subfpath in audio_subfpaths]
         trans_fpaths = [audio_fpath.replace('flac', 'txt') for audio_fpath in audio_fpaths]
         
-    # load preds from validator model
+    # load inference from validator model
     idx_to_src_and_hyp = defaultdict(lambda: None)
     invalid_line_indices = []
     with open(hyps_tsv, "r") as f:
@@ -215,6 +163,7 @@ def whisper_checker(
         q.put(chunk_results)
         
     hallucinated_indices = []
+    hallucination_info = []
     
     def _spread_through_processes(n_processes, idx_and_src_and_hyps):
         n = len(idx_and_src_and_hyps)
@@ -234,18 +183,32 @@ def whisper_checker(
         )
         p.start()
         processes.append(p)
+        
+    # Collect results from all processes
     for q in queues:
-        hallucinated_indices.extend(q.get())
+        results = q.get()
+        for idx, is_hallucinated, info in results:
+            hallucinated_indices.append((idx, is_hallucinated))
+            if info is not None:
+                hallucination_info.append(info)   
+        
     for p in processes:
         p.join()
 
     # show the statistics
     hallucinated_only = [x[1] for x in hallucinated_indices]
+    
+    # Write results to CSV after all processes complete
+    with open(f'{output_dir}/hallucination_result.csv', mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['MER', 'Initial_Inference', 'Validator_Inference', 'Initial_Inference_Path', 'Index'])
+        for info in hallucination_info:
+            writer.writerow(info)
+    
     print(f"Total hallucinated segments: {sum(hallucinated_only)}")
     print(f"Hallucination ratio: {sum(hallucinated_only) / len(hallucinated_indices)}")
     
     # save the new tsv filtered by the hallucinated indices
-    
     if output_dir is None:
         # do not save the hallucinated tsv, just return
         print("No output directory specified, not saving the hallucinated tsv...")
@@ -254,7 +217,7 @@ def whisper_checker(
     if not osp.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
         
-    output_base_fname = f"train_non-hallucinated-whisper-base-threshold{threshold}"
+    output_base_fname = f"cleaned-threshold-{threshold}"
     
     if phonemize:
         output_base_fname += "-phonemized"
@@ -266,14 +229,16 @@ def whisper_checker(
     # output cleaned dataset    
     output_fname = f"{output_base_fname}.tsv"
     
+    # return cleaned dataset
     with open(osp.join(output_dir, output_fname), "w") as fw:
         print(root, file=fw)
-        for i, (idx, hallucinated) in enumerate(tqdm(hallucinated_indices, total=len(hallucinated_indices), desc="Writing hallucinated tsv...")):
+        for i, (idx, hallucinated) in enumerate(tqdm(hallucinated_indices, total=len(hallucinated_indices), desc="Writing cleaned tsv...")):
             if not hallucinated:
                 print(audio_subfpaths[idx], file=fw)
 
 def main(args):
     print(args)
+
     if args.type == "whisper":
         whisper_checker(args.original_tsv, args.hyps_txt, args.output_dir, 
             threshold=args.threshold, 
@@ -282,8 +247,9 @@ def main(args):
             mix_detection=args.mix_detection,
             empty_error_rate=args.empty_error_rate,
             additional_fname=args.additional_fname,
-            overwrite_root=args.overwrite_root
+            overwrite_root=args.overwrite_root,
         )
+    print("Everthing is done!")
 
 
 if __name__ == "__main__":
@@ -343,3 +309,4 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     main(args)
+

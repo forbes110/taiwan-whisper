@@ -1003,11 +1003,11 @@ def main():
 
     # override timestamp tokens until tokenizer issues are fixed in transformers --> what issue? 
     timestamps = [AddedToken("<|%.2f|>" % (i * 0.02), lstrip=False, rstrip=False) for i in range(1500 + 1)]
+    
     # with logging.disable(logging.WARNING):
     tokenizer.add_tokens(timestamps)
 
-    # The teacher model can safely be cast to the dtype of training since we don't
-    # update the params
+    # The teacher model can safely be cast to the dtype of training since we don't update the params
     teacher_model = WhisperForConditionalGeneration.from_pretrained(
         model_args.teacher_model_name_or_path,
         cache_dir=model_args.cache_dir,
@@ -1016,8 +1016,10 @@ def main():
         torch_dtype=teacher_dtype,
         attn_implementation=model_args.attn_implementation,
     )
+    
     if model_args.mix_lang_emb:
         teacher_model = mix_language_embeddings(teacher_model, tokenizer, languages=['zh', 'en'])
+        
     student_model = WhisperForConditionalGeneration.from_pretrained(
         model_args.model_name_or_path,
         config=config,
@@ -1070,6 +1072,7 @@ def main():
     )
 
     share_hidden_states = training_args.freeze_encoder and student_model.config.d_model == teacher_model.config.d_model
+    
     if share_hidden_states:
         # tie the weights for the teacher encoder if we're freezing the student and it's the same as the teacher
         teacher_model.model.encoder = student_model.model.encoder

@@ -65,12 +65,6 @@ class MixErrorRate(object):
             self.converter = opencc.OpenCC('t2s.json')
             self.zh_phonemizer = partial(lazy_pinyin, style=Style.BOPOMOFO, errors='ignore')
             self.zh_bopomofo_stress_marks = ['ˊ', 'ˇ', 'ˋ', '˙']
-            # self.en_phonemizer = G2p()
-            # self.en_valid_phonemes = [p for p in self.en_phonemizer.phonemes]
-            # for p in self.en_phonemizer.phonemes:
-            #     if p[-1].isnumeric():
-            #         self.en_valid_phonemes.append(p[:-1])
-            # use lexicon instead
             self.en_wrd2phn = defaultdict(lambda: [])
             with open(lexicon_fpath, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -88,6 +82,7 @@ class MixErrorRate(object):
         cs_list = []
         cur_en_word = ''
         for s in cs_string:
+            
             # if is space, skip it
             if s in [' ', '\t', '\n', '\r', ',', '.', '!', '?', '。', '，', '！', '？', '、', '；', '：', '「', '」', '『', '』', '（', '）', '(', ')', '\[', '\]', '{', '}', '<', '>', '《', '》', '“', '”', '‘', '’', '…', '—', '～', '·', '•']:
                 if cur_en_word != '':

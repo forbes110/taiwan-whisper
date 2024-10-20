@@ -1,0 +1,2 @@
+- 看完 elim_hallucination 中移除 tag 的部分
+    - 找怎麼刪除來做 hallucination_contain_list 和 hallucination_match_list
