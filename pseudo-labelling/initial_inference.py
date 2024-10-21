@@ -4,6 +4,11 @@ import torch
 import csv
 import argparse
 from faster_whisper.transcribe import BatchedInferencePipeline, WhisperModel  # Import the required modules
+from faster_whisper.tokenizer import _LANGUAGE_CODES, Tokenizer
+import tokenizers
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+#os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 def parse_args():
     """Parse command-line arguments."""
@@ -51,26 +56,37 @@ def save_transcription_to_csv(transcriptions, output_csv):
 def main():
     args = parse_args()
     print(args)
+    model_size_or_path = args.model_size_or_path
 
     """Main function to process all audio files listed in dataset.csv."""
     audio_files = load_dataset(args.dataset_path)
-
+                   
     # Initialize Whisper model and the pipeline
     model = WhisperModel(
-        model_size_or_path=args.model_size_or_path,
-        device="cuda" if torch.cuda.is_available() else "cpu",  # Auto-select device
+        model_size_or_path=model_size_or_path,
+        device = "cuda",
+        device_index = [0],
         compute_type=args.compute_type,
         num_workers=args.num_workers  # Set number of workers for parallel processing
     )
     
+    print(f"Using device: {model.device}", flush=True)
+    
     # TODO: now we use batched version, maybe use sequence version later
+    
+    tokenizer = Tokenizer(
+        multilingual=True,
+        task="transcribe",
+        language="zh",
+        tokenizer=tokenizers.Tokenizer.from_pretrained(model_size_or_path)
+    )
     
     pipeline = BatchedInferencePipeline(
         model, 
         use_vad_model=True,  # Enable VAD model
         chunk_length=args.chunk_length,   
         language=args.language,
-        vad_device="cuda" if torch.cuda.is_available() else "cpu",
+        tokenizer=tokenizer
     )
 
     # Ensure the output directory exists

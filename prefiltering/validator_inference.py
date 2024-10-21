@@ -193,6 +193,12 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    
+    parser.add_argument(
+        "--validator_model_card",
+        default="openai/whisper-base",
+        help="a sample arg",
+    )
     parser.add_argument(
         "--root",
         default=None,

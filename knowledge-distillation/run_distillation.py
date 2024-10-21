@@ -23,6 +23,7 @@ import os
 import re
 import shutil
 import sys
+import csv
 import time
 from dataclasses import dataclass, field
 from functools import partial
@@ -64,7 +65,6 @@ from transformers.modeling_outputs import BaseModelOutput
 from transformers.models.whisper.english_normalizer import BasicTextNormalizer, EnglishTextNormalizer
 from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
-from dataset.cool_dataset import load_cool_dataset
 from utils.model_utils import mix_language_embeddings
 from utils.hallucination_detector import check_hallucination
 from utils.evaluation import MixErrorRate
@@ -161,7 +161,7 @@ class DataTrainingArguments:
     """
     Arguments pertaining to what data we are going to input our model for training and eval.
     """
-    # for ntu-cool dataset
+    # for our customized dataset
     train_dataset_manifest: str = field(
         default=None,
         metadata={
@@ -522,12 +522,16 @@ def log_metric(
 ):
     """Helper function to log all training/evaluation metrics with the correct prefixes and styling."""
     log_metrics = {}
+    
     for k, v in metrics.items():
         log_metrics[f"{prefix}/{k}"] = v
+        
     log_metrics[f"{prefix}/time"] = train_time
     log_metrics[f"{prefix}/epoch"] = epoch
+    
     if learning_rate is not None:
         log_metrics[f"{prefix}/learning_rate"] = learning_rate
+        
     accelerator.log(log_metrics, step=step)
 
 
@@ -540,14 +544,21 @@ def log_pred(
     step: int,
     prefix: str = "eval",
     num_lines: int = 200000,
+    output_dir: str = "mnt/predictions"
 ):
     """Helper function to log target/predicted transcriptions to weights and biases (wandb)."""
+    
     if accelerator.is_main_process:
+        
         wandb_tracker = accelerator.get_tracker("wandb")
+        # local save
+        os.makedirs(output_dir, exist_ok=True)
+        
         # pretty name for current step: step 50000 -> step 50k
         cur_step_pretty = f"{int(step // 1000)}k" if step > 1000 else step
         prefix_pretty = prefix.replace("/", "-")
 
+        # wandb
         # convert str data to a wandb compatible format
         str_data = [[label_str[i], pred_str[i], norm_label_str[i], norm_pred_str[i]] for i in range(len(pred_str))]
         # log as a table with the appropriate headers
@@ -557,7 +568,15 @@ def log_pred(
             data=str_data[:num_lines],
             step=step,
         )
-
+        # save to disk
+        local_path = os.path.join(output_dir, f"{prefix_pretty}_step_{cur_step_pretty}_predictions.csv")
+        with open(local_path, mode="w", newline='', encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Target", "Pred", "Norm Target", "Norm Pred"])
+            writer.writerows(str_data[:num_lines])
+        
+        
+        # wandb
         # log incorrect normalised predictions
         str_data = np.asarray(str_data)
         str_data_incorrect = str_data[str_data[:, -2] != str_data[:, -1]]
@@ -568,6 +587,12 @@ def log_pred(
             data=str_data_incorrect[:num_lines],
             step=step,
         )
+        # save to disk
+        incorrect_path = os.path.join(output_dir, f"{prefix_pretty}_step_{cur_step_pretty}_incorrect.csv")
+        with open(incorrect_path, mode="w", newline='', encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Target", "Pred", "Norm Target", "Norm Pred"])
+            writer.writerows(str_data_incorrect[:num_lines])
 
 
 def convert_dataset_str_to_list(
@@ -726,6 +751,23 @@ def load_multiple_datasets(
 
     return interleaved_dataset
 
+def customized_data_generator(audio_fpaths, last_segment_handler_type="trim"):
+    for audio_fpath in audio_fpaths:
+        feature = _get_feature_by_audio_fpath(audio_fpath, last_segment_handler_type=last_segment_handler_type)
+        yield feature
+
+def load_customized_dataset(manifest_fpath, root=None) -> IterableDataset:
+    print(f"Loading customized dataset from {manifest_fpath}")
+    audio_fpaths = load_audio_fpaths(manifest_fpath, root=root)
+    ex_feature = Features()
+    ex_feature["audio"] = "dummy"
+    ex_feature["text"] = "dummy"
+    ex_feature['whisper_transcript'] = "dummy"
+    ex_feature['last_segment_transcript'] = "dummy"
+    ex_feature['condition_on_prev'] = "dummy"
+    customized_dataset = IterableDataset.from_generator(customized_data_generator, features=ex_feature, gen_kwargs={"audio_fpaths": audio_fpaths})
+
+    return customized_dataset, audio_fpaths
 
 def sorted_checkpoints(output_dir=None, checkpoint_prefix="checkpoint") -> List[str]:
     """Helper function to sort saved checkpoints from oldest to newest."""
@@ -796,6 +838,7 @@ def get_parameter_names(model, forbidden_layer_types, forbidden_module=None):
 
 
 def main():
+    
     # 1. Parse input arguments
     # We keep distinct sets of args, for cleaner separation of model/data/training related args
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, DistillationTrainingArguments))
@@ -880,15 +923,6 @@ def main():
     if accelerator.is_main_process:
         if training_args.push_to_hub:
             logger.warning("Pushing to the Hub is not yet supported in this script.")
-            # if training_args.hub_model_id is None:
-            #     repo_name = get_full_repo_name(
-            #         Path(training_args.output_dir).absolute().name,
-            #         token=training_args.hub_token,
-            #     )
-            # else:
-            #     repo_name = training_args.hub_model_id
-            # create_repo(repo_name, exist_ok=True, token=training_args.hub_token)
-
             with open(os.path.join(training_args.output_dir, ".gitignore"), "w+") as gitignore:
                 if "wandb" not in gitignore:
                     gitignore.write("wandb\n")
@@ -902,25 +936,12 @@ def main():
     # set seed for determinism
     set_seed(training_args.seed)
     train_dataset_len = None
+    
     if training_args.do_train:
-        # raw_datasets["train"] = load_multiple_datasets(
-        #     data_args.train_dataset_name,
-        #     data_args.train_dataset_config_name,
-        #     splits=data_args.train_split_name,
-        #     text_column_names=data_args.text_column_name,
-        #     use_pseudo_labels=data_args.use_pseudo_labels,
-        #     streaming=data_args.streaming,
-        #     dataset_samples=data_args.train_dataset_samples,
-        #     seed=training_args.seed,
-        #     accelerator=accelerator,
-        #     cache_dir=data_args.dataset_cache_dir,
-        #     token=model_args.token,
-        # )
-        # load cool dataset
-        raw_datasets["train"], audio_fpaths = load_cool_dataset(data_args.train_dataset_manifest, root=data_args.train_dataset_root)
+        # TODO: check loading code here
+        # load my dataset
+        raw_datasets["train"], audio_fpaths = load_customized_dataset(data_args.train_dataset_manifest, root=data_args.train_dataset_root)
         train_dataset_len = len(audio_fpaths)
-        # print(raw_datasets["train"])
-        # print(next(raw_datasets["train"]))
         raw_datasets_train_features = list(raw_datasets["train"].features.keys())
 
     if training_args.do_eval:
@@ -1019,7 +1040,8 @@ def main():
     
     if model_args.mix_lang_emb:
         teacher_model = mix_language_embeddings(teacher_model, tokenizer, languages=['zh', 'en'])
-        
+    
+    # TODO: do create_student_model first to get the model_name_or_path init
     student_model = WhisperForConditionalGeneration.from_pretrained(
         model_args.model_name_or_path,
         config=config,
@@ -1142,7 +1164,7 @@ def main():
     prefetch_factor = training_args.dataloader_prefetch_factor
 
     # metric = evaluate.load("cer") 
-    # # revise to mer for zh setup
+    # revise to mer for zh setup
     metric = MixErrorRate()
     normalizer = (
         BasicTextNormalizer()
@@ -1224,7 +1246,6 @@ def main():
         # process text targets - for training these are the Whisper-generated pseudo-labels
         input_str_batched = batch[train_text_column_name]
         condition_on_prev_batched = batch.get("condition_on_prev", len(input_str_batched) * [None])
-        # last_segment_str_batched = batch.get("last_segment_transcript", len(input_str_batched) * [None]) # we deal with this in cool_dataset.py
         assert len(input_str_batched) == len(condition_on_prev_batched), "Batched inputs must be the same length"
         
         all_token_ids = []
@@ -1237,14 +1258,17 @@ def main():
             # check whether we have timestamps in the PLs and filter if required
             has_timestamps = len(set(token_ids) & set(timestamp_ids)) > 0
             if has_timestamps:
+                
                 # sample from binomial distribution to get probability of training on timestamps
                 predict_timestamps = bool(np.random.binomial(1, timestamp_probability))
+                
                 if not predict_timestamps:
                     # filter timestamps and insert the <|notimestamps|> task token
                     token_ids = [token for token in token_ids if token < timestamp_begin]
                     token_ids.insert(timestamp_position, timestamp_begin)
 
             all_token_ids_unprompted.append(token_ids)
+            
             # check whether to condition on previous text - we do this with probability condition_on_prev_probability
             condition_on_prev = bool(np.random.binomial(1, condition_on_prev_probability))
             if not condition_on_prev:
@@ -1379,9 +1403,11 @@ def main():
         # normalize everything and re-compute the WER
         norm_pred_str = [normalizer(pred) for pred in pred_str]
         norm_label_str = [normalizer(label) for label in label_str]
+        
         # for logging, we need the pred/labels to match the norm_pred/norm_labels, so discard any filtered samples here
         pred_str = [pred_str[i] for i in range(len(norm_pred_str)) if len(norm_label_str[i]) > 0]
         label_str = [label_str[i] for i in range(len(norm_label_str)) if len(norm_label_str[i]) > 0]
+        
         # filtering step to only evaluate the samples that correspond to non-zero normalized references:
         norm_pred_str = [norm_pred_str[i] for i in range(len(norm_pred_str)) if len(norm_label_str[i]) > 0]
         norm_label_str = [norm_label_str[i] for i in range(len(norm_label_str)) if len(norm_label_str[i]) > 0]
@@ -1496,11 +1522,6 @@ def main():
             }
         )
     accelerator.wait_for_everyone()
-    # if accelerator.is_main_process:
-    #     logger.info(gen_kwargs)
-    #     logger.info(student_model.generation_config)
-    #     logger.info(student_model.config.forced_decoder_ids)
-    #     assert False, "stop for debug"
 
     # 15. Prepare everything with accelerate
     student_model, teacher_model, optimizer, lr_scheduler = accelerator.prepare(
@@ -1525,16 +1546,17 @@ def main():
     ):
         student_model.train()
         teacher_model.eval()
-        # print(batch.keys())
-        # print(batch["input_features"].shape)
 
         student_outputs = student_model(**batch)
         with torch.no_grad():
+            
             if share_hidden_states:
+                
                 # if the student and teacher share the same frozen encoder then we don't have to recompute the
                 # encoder hidden-states for the teacher model, we can just re-use from the student
                 encoder_outputs = BaseModelOutput(student_outputs.encoder_last_hidden_state.to(dtype=teacher_dtype))
                 teacher_outputs = teacher_model(encoder_outputs=encoder_outputs, labels=batch["labels"])
+                
             else:
                 # do the full forward pass for the teacher model (encoder + decoder)
                 teacher_outputs = teacher_model(**batch)
